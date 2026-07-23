@@ -117,6 +117,21 @@ BRONZE_MAPPING = {
                         },
                         'analyzer': 'multilingual',
                         'type': 'text'
+                    },
+                    'country_code': {
+                        'type': 'keyword'
+                    },
+                    'state_code': {
+                        'type': 'keyword'
+                    },
+                    'city': {
+                        'type': 'text',
+                        'fields': {
+                            'keyword': {
+                                'type': 'keyword',
+                                'ignore_above': 256
+                            }
+                        }
                     }
                 }
             },
