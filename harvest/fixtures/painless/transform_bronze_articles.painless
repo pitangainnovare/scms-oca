@@ -276,6 +276,9 @@ List publishers = new ArrayList();
 if (publisherName != null && !publisherName.isEmpty()) {
   Map publisher = new HashMap();
   publisher.put("name", publisherName);
+  putStringIfPresent(publisher, "country_code", getScalar(journal, "v310"));
+  putStringIfPresent(publisher, "state_code", getScalar(journal, "v320"));
+  putStringIfPresent(publisher, "city", getScalar(journal, "v490"));
   publishers.add(publisher);
 }
 if (!publishers.isEmpty()) out.put("publishers", publishers);
