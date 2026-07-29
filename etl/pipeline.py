@@ -7,10 +7,10 @@ from typing import Any, Dict, List, Optional
 from django.conf import settings
 
 from etl.client import OpenSearchClient
-from etl.documents import SilverDocument
-from etl.mapping_silver import SILVER_MAPPING
 from etl.deduplicator.openalex import OpenAlexMatcher
 from etl.deduplicator.scielo import SciELODeduplicator
+from etl.documents import SilverDocument
+from etl.mapping_silver import SILVER_MAPPING
 from etl.models import EtlPipelineConfig
 from etl.transform.merger import SilverMerger
 from etl.transform.normalizers import (
@@ -19,6 +19,7 @@ from etl.transform.normalizers import (
     normalize_text,
 )
 from etl.transform.standardizer import standardizer_for
+from etl.world_regions import add_world_regions
 from harvest.utils import clean_source_payload
 
 logger = logging.getLogger(__name__)
@@ -603,6 +604,7 @@ class OpenSearchETLPipeline:
                 }
             }
             source = doc.to_index_dict()
+            add_world_regions(source)
             action_bytes = self._bulk_action_size_bytes(action, source)
 
             if actions and (chunk_docs >= max_docs or chunk_bytes + action_bytes > max_bytes):
