@@ -42,6 +42,26 @@ class WorldRegionsTests(SimpleTestCase):
         for country_code in ("", "BRA", "INVALID", None):
             with self.subTest(country_code=country_code):
                 self.assertIsNone(world_region_for_country(country_code))
+    def test_adds_and_removes_unique_affiliation_world_regions(self):
+        document = {
+            "author_country_codes": ["BR", "JP", "BR"],
+            "oca_data": {},
+        }
+
+        add_affiliation_world_regions(document)
+
+        affiliations = document["oca_data"]["openalex"]["affiliations"]
+        self.assertEqual(
+            affiliations["world_regions"],
+            ["Eastern Asia", "South America"],
+        )
+
+        document.pop("author_country_codes")
+
+        add_affiliation_world_regions(document)
+
+        self.assertNotIn("world_regions", affiliations)
+
     def test_starts_incremental_async_backfill(self):
         self.client.update_by_query.return_value = {"task": "node:1"}
 
