@@ -10,6 +10,17 @@ String padZero(int number) {
   return number < 10 ? '0' + String.valueOf(number) : String.valueOf(number);
 }
 
+Map buildContentUrl(def url) {
+  if (url == null) {
+    return null;
+  }
+  Map contentUrl = new HashMap();
+  Map landingPage = new HashMap();
+  landingPage.put('url', url);
+  contentUrl.put('landing_page', landingPage);
+  return contentUrl;
+}
+
 String extractDoi(String text) {
   if (text == null) {
     return null;
@@ -211,7 +222,7 @@ Map parseIdentifiers(def identifiers) {
   Map ids = new HashMap();
   String preprintId = null;
   String doi = null;
-  String landingPageUrl = null;
+  String pageUrl = null;
 
   if (identifiers != null) {
     for (def identifierEntry : identifiers) {
@@ -230,26 +241,26 @@ Map parseIdentifiers(def identifiers) {
         int idx = idText.indexOf('preprint/view/');
         preprintId = idText.substring(idx + 14);
       }
-      if (landingPageUrl == null && idText.startsWith('http')) {
-        landingPageUrl = idText;
+      if (pageUrl == null && idText.startsWith('http')) {
+        pageUrl = idText;
       }
     }
   }
 
   ids.put('scl_preprint_id', preprintId);
   ids.put('doi', doi);
-  ids.put('landing_page_url', landingPageUrl);
+  ids.put('page_url', pageUrl);
   return ids;
 }
 
-String pickLandingPageUrl(def rawSource, def landingPageFromIds) {
+String pickPageUrl(def rawSource, def pageUrlFromIds) {
   if (rawSource instanceof List && !((List) rawSource).isEmpty()) {
     def first = ((List) rawSource).get(0);
     if (first != null) {
       return first.toString();
     }
   }
-  return landingPageFromIds;
+  return pageUrlFromIds;
 }
 
 // ---------------------------------------------------------------------------
@@ -332,9 +343,10 @@ if (!rightsWithLang.isEmpty()) {
 }
 
 Map ids = parseIdentifiers(raw.identifier);
-String landingPageUrl = pickLandingPageUrl(raw.source, ids.remove('landing_page_url'));
-if (landingPageUrl != null) {
-  source.put('landing_page_url', landingPageUrl);
+String pageUrl = pickPageUrl(raw.source, ids.remove('page_url'));
+Map contentUrl = buildContentUrl(pageUrl);
+if (contentUrl != null) {
+  doc.put('content_url', contentUrl);
 }
 if (!ids.isEmpty()) {
   doc.put('ids', ids);

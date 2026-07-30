@@ -94,6 +94,10 @@ BRONZE_MAPPING = {
             'publication_year': {
                 'type': 'long'
             },
+            'content_url': {
+                'type': 'object',
+                'dynamic': True
+            },
             'publishers': {
                 'type': 'object',
                 'properties': {
@@ -217,9 +221,6 @@ BRONZE_MAPPING = {
                     },
                     'is_primary': {
                         'type': 'boolean'
-                    },
-                    'landing_page_url': {
-                        'type': 'keyword'
                     },
                     'title': {
                         'fields': {
