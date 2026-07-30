@@ -209,24 +209,6 @@ BRONZE_MAPPING = {
             'source': {
                 'type': 'object',
                 'properties': {
-                    'host_organization': {
-                        'type': 'object',
-                        'properties': {
-                            'id': {
-                                'type': 'keyword'
-                            },
-                            'name': {
-                                'fields': {
-                                    'keyword': {
-                                        'type': 'keyword',
-                                        'ignore_above': 256
-                                    }
-                                },
-                                'analyzer': 'multilingual',
-                                'type': 'text'
-                            }
-                        }
-                    },
                     'id': {
                         'type': 'keyword'
                     },

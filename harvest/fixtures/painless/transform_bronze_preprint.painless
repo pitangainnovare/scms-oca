@@ -285,9 +285,6 @@ List publishers = (List) publisherFields.get('publishers');
 if (!publishers.isEmpty()) {
   doc.put('publishers', publishers);
   source.put('title', mainPublisher);
-  Map hostOrganization = new HashMap();
-  hostOrganization.put('name', mainPublisher);
-  source.put('host_organization', hostOrganization);
 }
 
 Map abstractFields = buildAbstractFields(raw.description);
