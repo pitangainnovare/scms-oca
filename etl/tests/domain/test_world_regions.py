@@ -10,7 +10,7 @@ from etl.world_regions import (
 )
 
 
-class WorldRegionsBackfillTests(SimpleTestCase):
+class WorldRegionsTests(SimpleTestCase):
     def setUp(self):
         self.client = Mock()
         self.client.indices.get_field_mapping.return_value = {
@@ -38,6 +38,10 @@ class WorldRegionsBackfillTests(SimpleTestCase):
         self.assertEqual(world_region_for_country("GB"), "Northern Europe")
         self.assertEqual(world_region_for_country("GR"), "Southern Europe")
 
+    def test_returns_none_for_invalid_country_codes(self):
+        for country_code in ("", "BRA", "INVALID", None):
+            with self.subTest(country_code=country_code):
+                self.assertIsNone(world_region_for_country(country_code))
     def test_starts_incremental_async_backfill(self):
         self.client.update_by_query.return_value = {"task": "node:1"}
 
