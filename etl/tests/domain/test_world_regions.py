@@ -42,6 +42,14 @@ class WorldRegionsTests(SimpleTestCase):
         for country_code in ("", "BRA", "INVALID", None):
             with self.subTest(country_code=country_code):
                 self.assertIsNone(world_region_for_country(country_code))
+
+    def test_ignores_document_without_source(self):
+        document = {"oca_data": {}}
+
+        add_source_world_region(document)
+
+        self.assertEqual(document, {"oca_data": {}})
+
     def test_adds_and_removes_unique_affiliation_world_regions(self):
         document = {
             "author_country_codes": ["BR", "JP", "BR"],
