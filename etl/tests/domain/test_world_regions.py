@@ -2,7 +2,12 @@ from unittest.mock import Mock
 
 from django.test import SimpleTestCase
 
-from etl.world_regions import apply_world_regions, world_region_for_country
+from etl.world_regions import (
+    add_affiliation_world_regions,
+    add_source_world_region,
+    apply_world_regions,
+    world_region_for_country,
+)
 
 
 class WorldRegionsBackfillTests(SimpleTestCase):

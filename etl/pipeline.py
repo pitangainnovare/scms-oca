@@ -19,7 +19,7 @@ from etl.transform.normalizers import (
     normalize_text,
 )
 from etl.transform.standardizer import standardizer_for
-from etl.world_regions import add_world_regions
+from etl.world_regions import add_affiliation_world_regions, add_source_world_region
 from harvest.utils import clean_source_payload
 
 logger = logging.getLogger(__name__)
@@ -604,7 +604,8 @@ class OpenSearchETLPipeline:
                 }
             }
             source = doc.to_index_dict()
-            add_world_regions(source)
+            add_source_world_region(source)
+            add_affiliation_world_regions(source)
             action_bytes = self._bulk_action_size_bytes(action, source)
 
             if actions and (chunk_docs >= max_docs or chunk_bytes + action_bytes > max_bytes):

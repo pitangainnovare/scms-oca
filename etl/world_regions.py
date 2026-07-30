@@ -95,23 +95,21 @@ def world_region_for_country(country_code):
     return country_world_regions().get(country_code.strip().upper())
 
 
-def add_world_regions(document):
-    oca_data = document.get("oca_data")
+def add_source_world_region(document):
+    source = document["oca_data"].get("scielo", {}).get("source")
 
-    if not isinstance(oca_data, dict):
+    if source is None:
         return
 
-    scielo = oca_data.get("scielo")
-    source = scielo.get("source") if isinstance(scielo, dict) else None
+    region = world_region_for_country(source.get("country_code"))
 
-    if isinstance(source, dict):
-        region = world_region_for_country(source.get("country_code"))
+    if region:
+        source["world_region"] = region
+    else:
+        source.pop("world_region", None)
 
-        if region:
-            source["world_region"] = region
-        else:
-            source.pop("world_region", None)
 
+def add_affiliation_world_regions(document):
     regions = sorted(
         {
             region
@@ -119,25 +117,17 @@ def add_world_regions(document):
             if (region := world_region_for_country(country_code))
         }
     )
-    openalex = oca_data.get("openalex")
+    oca_data = document["oca_data"]
+    affiliations = oca_data.get("openalex", {}).get("affiliations")
 
     if regions:
-        if not isinstance(openalex, dict):
-            openalex = {}
-            oca_data["openalex"] = openalex
-
-        affiliations = openalex.get("affiliations")
-
-        if not isinstance(affiliations, dict):
-            affiliations = {}
-            openalex["affiliations"] = affiliations
-
+        affiliations = oca_data.setdefault("openalex", {}).setdefault(
+            "affiliations",
+            {},
+        )
         affiliations["world_regions"] = regions
-    elif isinstance(openalex, dict):
-        affiliations = openalex.get("affiliations")
-
-        if isinstance(affiliations, dict):
-            affiliations.pop("world_regions", None)
+    elif affiliations is not None:
+        affiliations.pop("world_regions", None)
 
 
 def apply_world_regions(
