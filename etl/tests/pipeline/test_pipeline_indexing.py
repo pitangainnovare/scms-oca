@@ -39,7 +39,7 @@ class WorldRegionIndexingTests(SimpleTestCase):
             doc_id="S001",
             type="article",
             publication_year=2024,
-            author_country_codes=["BR", "JP"],
+            author_country_codes=["BR", "JP", "BR"],
             oca_data={
                 "scielo": {"source": {"country_code": "BR"}},
                 "openalex": {},
