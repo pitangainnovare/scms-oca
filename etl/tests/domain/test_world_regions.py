@@ -43,6 +43,28 @@ class WorldRegionsTests(SimpleTestCase):
             with self.subTest(country_code=country_code):
                 self.assertIsNone(world_region_for_country(country_code))
 
+    def test_adds_and_removes_source_world_region_for_unknown_country(self):
+        document = {
+            "oca_data": {
+                "scielo": {
+                    "source": {
+                        "country_code": "BR",
+                    },
+                },
+            },
+        }
+        source = document["oca_data"]["scielo"]["source"]
+
+        add_source_world_region(document)
+
+        self.assertEqual(source["world_region"], "South America")
+
+        source["country_code"] = "INVALID"
+
+        add_source_world_region(document)
+
+        self.assertNotIn("world_region", source)
+
     def test_ignores_document_without_source(self):
         document = {"oca_data": {}}
 
