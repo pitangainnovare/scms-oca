@@ -116,11 +116,6 @@ if (raw.name != null) {
 if (raw.theme != null && raw.theme.linkUrl != null) {
   source.put('landing_page_url', raw.theme.linkUrl);
 }
-if (raw.affiliation != null) {
-  Map hostOrganization = new HashMap();
-  hostOrganization.put('name', raw.affiliation);
-  source.put('host_organization', hostOrganization);
-}
 if (raw.issn_l != null) {
   source.put('issn_l', raw.issn_l);
 }
