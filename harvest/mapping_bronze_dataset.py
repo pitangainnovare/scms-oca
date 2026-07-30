@@ -364,15 +364,6 @@ BRONZE_MAPPING = {
             'language': {
                 'type': 'keyword'
             },
-            'language_normalized': {
-                'type': 'text',
-                'fields': {
-                    'keyword': {
-                        'type': 'keyword',
-                        'ignore_above': 256
-                    }
-                }
-            },
             'citation_name': {
                 'type': 'keyword'
             },
