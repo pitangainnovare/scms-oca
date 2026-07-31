@@ -1,4 +1,5 @@
 from etl.transform.normalizers import normalize_issn
+from etl.world_regions import world_region_for_country
 from harvest.global_metrics.parsing import (
     append_unique,
     coerce_int,
@@ -169,11 +170,18 @@ def global_metrics_update_script():
         }
         if (params.country_codes != null && params.country_codes.size() > 0) {
             ctx._source.oca_data.scielo.source.country_code = params.country_codes.get(0);
+            if (params.world_region != null) {
+                ctx._source.oca_data.scielo.source.world_region = params.world_region;
+            } else {
+                ctx._source.oca_data.scielo.source.remove('world_region');
+            }
         }
     """
 
 
 def build_global_metrics_update_by_query_body(group):
+    country_code = group["country_codes"][0] if group["country_codes"] else None
+
     return {
         "query": {
             "bool": {
@@ -189,6 +197,7 @@ def build_global_metrics_update_by_query_body(group):
             "params": {
                 "indexed_in": sorted(group["indexed_in"]),
                 "country_codes": group["country_codes"],
+                "world_region": world_region_for_country(country_code),
             },
         },
     }

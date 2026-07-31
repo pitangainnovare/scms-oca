@@ -204,6 +204,7 @@ class GlobalMetricsUploadTaskTests(SimpleTestCase):
         params = body["script"]["params"]
         self.assertEqual(params["indexed_in"], ["Scopus", "WoS"])
         self.assertEqual(params["country_codes"], ["BR"])
+        self.assertEqual(params["world_region"], "South America")
         self.assertIn("oca_data.scielo.source", body["script"]["source"])
 
     @override_settings(GLOBAL_METRICS_UPLOAD_ERROR_INDEX="global_metrics_upload_errors")

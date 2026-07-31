@@ -9,6 +9,7 @@ from etl.documents import RawOpenAlexInputDocument
 from etl.mapping_silver import SILVER_MAPPING
 from etl.transform.normalizers import normalize_openalex_id
 from etl.transform.standardizer import OpenAlexStandardizer
+from etl.world_regions import add_affiliation_world_regions, add_source_world_region
 from harvest.utils import clean_source_payload
 
 logger = logging.getLogger(__name__)
@@ -239,13 +240,21 @@ class Command(BaseCommand):
                         continue
 
                     if not dry_run:
-                        actions.append({
-                            "index": {
-                                "_index": write_alias,
-                                "_id": oa_id,
-                            }
-                        })
-                        actions.append(silver_doc.to_index_dict())
+                        source = silver_doc.to_index_dict()
+                        add_source_world_region(source)
+                        add_affiliation_world_regions(source)
+
+                        actions.extend(
+                            [
+                                {
+                                    "index": {
+                                        "_index": write_alias,
+                                        "_id": oa_id,
+                                    }
+                                },
+                                source,
+                            ]
+                        )
 
                 if actions and not dry_run:
                     try:

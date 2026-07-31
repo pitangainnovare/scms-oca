@@ -1,10 +1,62 @@
 from unittest.mock import Mock, patch
 
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from etl.documents import SilverDocument
 from etl.mapping_silver import SILVER_MAPPING
 from etl.pipeline import OpenSearchETLPipeline
+
+
+class WorldRegionIndexingTests(SimpleTestCase):
+    @patch("etl.pipeline.standardizer_for")
+    @patch("etl.pipeline.OpenAlexMatcher")
+    @patch("etl.pipeline.SciELODeduplicator")
+    @patch("etl.pipeline.OpenSearchClient")
+    def test_indexing_adds_un_m49_world_regions(
+        self,
+        client_cls,
+        _scielo_deduplicator_cls,
+        _openalex_matcher_cls,
+        _standardizer_for,
+    ):
+        client = Mock()
+        client.client.bulk.return_value = {"errors": False}
+        client.ensure_rollover_index.return_value = (
+            "silver_scientific_production-000001"
+        )
+        client.rollover.return_value = None
+        client_cls.return_value = client
+        pipeline_config = Mock(
+            default_document_type="article",
+            deduplicate_scielo=False,
+        )
+        pipeline_config.openalex_index_for.return_value = "bronze_openalex_works"
+        pipeline = OpenSearchETLPipeline(
+            opensearch_url="http://opensearch:9200",
+            pipeline_config=pipeline_config,
+        )
+        doc = SilverDocument(
+            doc_id="S001",
+            type="article",
+            publication_year=2024,
+            author_country_codes=["BR", "JP", "BR"],
+            oca_data={
+                "scielo": {"source": {"country_code": "BR"}},
+                "openalex": {},
+            },
+        )
+
+        pipeline._index_silver_documents([doc])
+
+        indexed = client.client.bulk.call_args.kwargs["body"][1]
+        self.assertEqual(
+            indexed["oca_data"]["scielo"]["source"]["world_region"],
+            "South America",
+        )
+        self.assertEqual(
+            indexed["oca_data"]["openalex"]["affiliations"]["world_regions"],
+            ["Eastern Asia", "South America"],
+        )
 
 
 class OrchestratorAliasTests(TestCase):
