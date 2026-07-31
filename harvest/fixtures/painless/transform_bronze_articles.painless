@@ -285,11 +285,6 @@ if (!publishers.isEmpty()) out.put("publishers", publishers);
 
 // Fonte (periodico).
 Map source = new HashMap();
-if (publisherName != null && !publisherName.isEmpty()) {
-  Map hostOrganization = new HashMap();
-  hostOrganization.put("name", publisherName);
-  source.put("host_organization", hostOrganization);
-}
 putStringIfPresent(source, "id", getScalar(journal, "v68"));
 source.put("is_open_access", true);
 List issns = new ArrayList();
