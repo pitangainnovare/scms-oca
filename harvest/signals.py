@@ -30,9 +30,7 @@ def _should_index_raw_data(instance, created, update_fields):
     if not instance.raw_data:
         if created:
             logger.warning(
-                "Registro criado sem raw_data, pulando indexação (%s:%s).",
-                instance.__class__.__name__,
-                instance.identifier,
+                f"Registro criado sem raw_data, pulando indexação ({instance.__class__.__name__}:{instance.identifier})."
             )
         return False
 
