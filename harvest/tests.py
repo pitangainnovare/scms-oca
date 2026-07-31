@@ -33,6 +33,13 @@ from .harvests.harvest_articles import (
 )
 from .harvests.harvest_data import harvest_data
 from .harvests.harvest_preprint import NODES, harvest_preprint
+from .bronze_transform import (
+    _build_batch_reindex_body,
+    _build_document_reindex_body,
+    transform_after_indexing,
+    transform_document,
+    transform_documents_batch,
+)
 from .indexing import get_index_name
 from .models import (
     GlobalMetricsUploadFile,
@@ -44,6 +51,8 @@ from .models import (
     HarvestErrorLogBooks,
     HarvestErrorLogPreprint,
     HarvestErrorLogSciELOData,
+    HarvestModelChoice,
+    TransformationScript,
 )
 from .parse_info_oai_pmh import (
     get_date,
@@ -739,3 +748,170 @@ class LanguageNormalizerTests(SimpleTestCase):
     def test_list_input_deduplicates_preserving_order(self):
         languages = ["English", "ENG", "Portuguese", "pt", "Castilian", "Spanish", "EN-US", "Spanish Sign Language", "Spanish, Castilian", "DUTCH"]
         self.assertEqual(normalize_language_field(languages), ["en", "pt", "es", "nl"])
+
+
+class ArticleBronzeTransformTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create(username="bronze-article-user", password="teste")
+        self.identifier = "S0100-879X1998000800011"
+        self.source_index = "raw_scielo_article_test"
+        self.dest_index = "bronze_scielo_articles_test"
+        self.transform_script = "ctx._source = ctx._source.raw_data;"
+
+        with (
+            patch("harvest.signals.index_harvested_instance"),
+            patch("harvest.signals.transform_after_indexing"),
+        ):
+            self.article = HarvestedArticle.objects.create(
+                identifier=self.identifier,
+                creator=self.user,
+                harvest_status="success",
+                index_status="success",
+                raw_data={
+                    "code": self.identifier,
+                    "processing_date": "1998-09-21",
+                    "article": {"v12": [{"l": "en", "_": "Title"}]},
+                },
+            )
+
+        self.script = TransformationScript.objects.create(
+            name="ArticleMeta raw para bronze",
+            source_index=self.source_index,
+            dest_index=self.dest_index,
+            transform_script=self.transform_script,
+            harvest_model=HarvestModelChoice.ARTICLE,
+            is_active=True,
+            creator=self.user,
+        )
+
+    def test_build_document_reindex_body_uses_ids_query(self):
+        body = _build_document_reindex_body(
+            source_index=self.source_index,
+            dest_index=self.dest_index,
+            transform_script=self.transform_script,
+            identifier=self.identifier,
+        )
+
+        self.assertEqual(body["source"]["index"], self.source_index)
+        self.assertEqual(body["dest"]["index"], self.dest_index)
+        self.assertEqual(body["script"]["source"], self.transform_script)
+        self.assertEqual(
+            body["source"]["query"],
+            {"ids": {"values": [self.identifier]}},
+        )
+
+    def test_build_batch_reindex_body_has_no_query_by_default(self):
+        body = _build_batch_reindex_body(
+            source_index=self.source_index,
+            dest_index=self.dest_index,
+            transform_script=self.transform_script,
+        )
+
+        self.assertEqual(body["source"]["index"], self.source_index)
+        self.assertEqual(body["dest"]["index"], self.dest_index)
+        self.assertNotIn("query", body["source"])
+
+    def test_transform_document_requires_identifier(self):
+        result = transform_document(self.script, identifier=None)
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["index"], self.source_index)
+        self.assertEqual(result["dest"], self.dest_index)
+        self.assertIn("identifier é obrigatório", result["error"])
+
+    @patch("harvest.bronze_transform._enqueue_transformed_bronze")
+    @patch("harvest.bronze_transform.client")
+    def test_transform_document_reindexes_single_article_and_enqueues_silver(
+        self,
+        mock_client,
+        mock_enqueue,
+    ):
+        mock_client.indices.exists.return_value = True
+        mock_client.reindex.return_value = {
+            "total": 1,
+            "created": 1,
+            "updated": 0,
+        }
+
+        result = transform_document(self.script, self.identifier)
+
+        mock_client.indices.refresh.assert_called_once_with(index=self.source_index)
+        mock_client.reindex.assert_called_once()
+        body = mock_client.reindex.call_args.kwargs["body"]
+        self.assertEqual(body["source"]["index"], self.source_index)
+        self.assertEqual(body["dest"]["index"], self.dest_index)
+        self.assertEqual(
+            body["source"]["query"],
+            {"ids": {"values": [self.identifier]}},
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(result["index"], self.source_index)
+        self.assertEqual(result["dest"], self.dest_index)
+        self.assertIsNone(result["error"])
+        mock_enqueue.assert_called_once_with(self.dest_index, self.identifier)
+
+    @patch("harvest.bronze_transform._enqueue_transformed_bronze")
+    @patch("harvest.bronze_transform.client")
+    def test_transform_document_fails_when_article_not_found_in_raw(
+        self,
+        mock_client,
+        mock_enqueue,
+    ):
+        mock_client.indices.exists.return_value = True
+        mock_client.reindex.return_value = {
+            "total": 0,
+            "created": 0,
+            "updated": 0,
+        }
+
+        result = transform_document(self.script, self.identifier)
+
+        self.assertEqual(result["status"], "success")
+        mock_enqueue.assert_not_called()
+
+    @patch("harvest.bronze_transform.client")
+    def test_transform_documents_batch_reindexes_without_ids_query(self, mock_client):
+        mock_client.indices.exists.return_value = True
+        mock_client.reindex.return_value = {
+            "total": 2,
+            "created": 2,
+            "updated": 0,
+        }
+
+        result = transform_documents_batch(self.script)
+
+        mock_client.indices.refresh.assert_not_called()
+        body = mock_client.reindex.call_args.kwargs["body"]
+        self.assertEqual(body["source"]["index"], self.source_index)
+        self.assertEqual(body["dest"]["index"], self.dest_index)
+        self.assertNotIn("query", body["source"])
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(result["created"], 2)
+        self.assertEqual(result["index"], self.source_index)
+        self.assertEqual(result["dest"], self.dest_index)
+
+    @patch("harvest.bronze_transform.transform_document")
+    def test_transform_after_indexing_uses_article_script(self, mock_transform_document):
+        mock_transform_document.return_value = {"status": "success"}
+
+        result = transform_after_indexing(
+            instance=self.article,
+            model_name="HarvestedArticle",
+        )
+
+        mock_transform_document.assert_called_once_with(self.script, self.identifier)
+        self.assertEqual(result["status"], "success")
+
+    def test_transform_after_indexing_skips_when_no_active_script(self):
+        self.script.is_active = False
+        self.script.save(update_fields=["is_active"])
+
+        result = transform_after_indexing(
+            instance=self.article,
+            model_name="HarvestedArticle",
+        )
+
+        self.assertEqual(result["status"], "skip")
+        self.assertIn("Nenhum script ativo", result["message"])
