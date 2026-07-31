@@ -203,6 +203,9 @@ def persist_article(user, identifier, article_payload):
     )
 
     try:
+        if not article_payload:
+            raise ValueError("Article payload is empty or invalid.")
+
         harvested_obj.source_url = _build_url("/api/v1/article/", {"code": identifier})
         harvested_obj.raw_data = article_payload
         harvested_obj.datestamp = parse_article_datestamp(article_payload)
