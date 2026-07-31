@@ -11,7 +11,7 @@ from wagtail.snippets.views.snippets import CreateView as SnippetCreateView
 from wagtail.snippets.views.snippets import EditView as SnippetEditView
 from wagtail.snippets.views.snippets import SnippetViewSet, SnippetViewSetGroup
 
-from .bronze_transform import transform_document
+from .bronze_transform import transform_documents_batch
 from .models import (
     GlobalMetricsUploadFile,
     HarvestedArticle,
@@ -198,15 +198,17 @@ def run_transform_view(request):
         return redirect(request.META.get("HTTP_REFERER", "/admin/"))
 
     try:
-        success = transform_document(script)
-        message = success.get("message")
-        if success.get("status") == "success":
+        result = transform_documents_batch(script)
+        if result.get("status") == "success":
             messages.success(
                 request,
-                f"Transformação executada com sucesso: {script.source_index} → {script.dest_index}. ({message})",
+                result
             )
         else:
-            messages.error(request, f"Falha na transformação. {message}")
+            messages.error(
+                request,
+                result
+            )
     except Exception as exc:
         messages.error(request, f"Erro ao executar transformação: {str(exc)}")
 

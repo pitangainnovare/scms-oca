@@ -12,7 +12,7 @@ from etl.models import EtlItemProcess, EtlPipelineConfig
 from etl.services import enqueue_etl_item
 from search_gateway.client import get_opensearch_client
 
-from .models import TransformationScript, HarvestStatus, IndexStatus
+from .models import HarvestStatus, IndexStatus, TransformationScript
 from .utils import source_hash
 
 logger = logging.getLogger(__name__)
@@ -72,108 +72,171 @@ def _parse_query_script(query_script, identifier=None):
     return query
 
 
-def _build_reindex_body(
-    *,
-    source_index,
-    dest_index,
-    transform_script,
-    query_script=None,
-    identifier=None,
-):
-    body = {
+def _base_reindex_body(source_index, dest_index, transform_script):
+    return {
         "source": {"index": source_index},
         "dest": {"index": dest_index},
         "script": {"lang": "painless", "source": transform_script},
     }
 
-    if identifier:
-        if query_script:
-            body["source"]["query"] = _parse_query_script(
-                query_script=query_script,
-                identifier=identifier,
-            )
-        else:
-            body["source"]["query"] = {"term": {"_id": identifier}}
-        return body
 
+def _build_document_reindex_body(
+    source_index,
+    dest_index,
+    transform_script,
+    identifier,
+    query_script=None,
+):
+    body = _base_reindex_body(
+        source_index=source_index,
+        dest_index=dest_index,
+        transform_script=transform_script,
+    )
     if query_script:
-        body["source"]["query"] = _parse_query_script(query_script=query_script)
-
+        body["source"]["query"] = _parse_query_script(
+            query_script=query_script,
+            identifier=identifier,
+        )
+    else:
+        body["source"]["query"] = {"ids": {"values": [identifier]}}
     return body
 
 
-def _format_reindex_counts(response):
-    total = int(response.get("total", 0) or 0)
-    updated = int(response.get("updated", 0) or 0)
-    created = int(response.get("created", 0) or 0)
-    return total, created, updated
+def _build_batch_reindex_body(
+    source_index,
+    dest_index,
+    transform_script,
+    query_script=None,
+):
+    body = _base_reindex_body(
+        source_index=source_index,
+        dest_index=dest_index,
+        transform_script=transform_script,
+    )
+    if query_script:
+        body["source"]["query"] = _parse_query_script(query_script=query_script)
+    return body
 
 
-def _run_reindex(*, body, log_prefix, error_context):
+def _build_transform_result(
+    status,
+    index,
+    dest,
+    total=0,
+    created=0,
+    updated=0,
+    error=None,
+):
+    return {
+        "status": status,
+        "total": total,
+        "created": created,
+        "updated": updated,
+        "index": index,
+        "dest": dest,
+        "error": error,
+    }
+
+
+def _run_reindex(body):
+    index = (body.get("source") or {}).get("index")
+    dest = (body.get("dest") or {}).get("index")
     try:
-        logger.info(log_prefix)
+        missing = _ensure_indices_exist(index, dest)
+        if missing:
+            raise RuntimeError(missing["message"])
         response = client.reindex(body=body, refresh=True)
-        total, created, updated = _format_reindex_counts(response)
-        logger.info(
-            "Transformação concluída: total=%s, created=%s, updated=%s",
-            total,
-            created,
-            updated,
+        return _build_transform_result(
+            "success",
+            index=index,
+            dest=dest,
+            total=int(response.get("total", 0) or 0),
+            created=int(response.get("created", 0) or 0),
+            updated=int(response.get("updated", 0) or 0),
         )
-        return {
-            "status": "success",
-            "message": (
-                f"Transformação concluída: total={total}, created={created}, updated={updated}"
-            ),
-        }
     except Exception as exc:
-        error_detail = getattr(exc, "info", None)
-        logger.error(
-            f"Erro ao transformar documento {error_context}: {exc}. Detalhe OpenSearch: {error_detail}"
+        message = f"Erro ao transformar {index} → {dest}: {exc}"
+        logger.error(f"{message}. Detalhe OpenSearch: {getattr(exc, 'info', None)}")
+        return _build_transform_result(
+            "error",
+            index=index,
+            dest=dest,
+            error=message,
         )
-        return {
-            "status": "error",
-            "message": f"Erro ao transformar documento {error_context}: {exc}",
-        }
 
 
-def transform_document(script, identifier=None):
+def transform_document(script, identifier):
     """
-    Usado para transformação automática após indexação de um novo documento.
+    Transforma um único documento raw → bronze.
 
-    Args:
-        script: Instância do TransformationScript
-        identifier: ID do documento a transformar
-
-    Returns:
-        Dict com status e mensagem da operação
+    Usado no fluxo automático após indexação (signals / reconciliação).
     """
-    missing = _ensure_indices_exist(script.source_index, script.dest_index)
-    if missing:
-        return missing
+    if not identifier:
+        return _build_transform_result(
+            "error",
+            index=script.source_index,
+            dest=script.dest_index,
+            error="identifier é obrigatório para transformação unitária.",
+        )
 
     try:
-        body = _build_reindex_body(
+        client.indices.refresh(index=script.source_index)
+    except Exception as exc:
+        logger.error(
+            f"Falha ao refresh do índice fonte {script.source_index} "
+            f"antes da transformação de {identifier}: {exc}"
+        )
+        return _build_transform_result(
+            "error",
+            index=script.source_index,
+            dest=script.dest_index,
+            error=str(exc),
+        )
+
+    body = _build_document_reindex_body(
+        source_index=script.source_index,
+        dest_index=script.dest_index,
+        transform_script=script.transform_script,
+        query_script=getattr(script, "query_script", None),
+        identifier=identifier,
+    )
+
+    logger.info(
+        f"Transformando documento {identifier} de {script.source_index} para {script.dest_index}"
+    )
+    result = _run_reindex(body)
+    if result.get("status") != "success":
+        return result
+    if (result.get("created", 0) + result.get("updated", 0)) > 0:
+        _enqueue_transformed_bronze(script.dest_index, identifier)
+    return result
+
+
+def transform_documents_batch(script):
+    """
+    Transforma documentos raw → bronze em lote.
+
+    Usado pelo botão de execução na interface administrativa.
+    """
+    try:
+        body = _build_batch_reindex_body(
             source_index=script.source_index,
             dest_index=script.dest_index,
             transform_script=script.transform_script,
-            query_script=getattr(script, "query_script", None),
-            identifier=identifier,
+            query_script=getattr(script, "query_script", None) or None,
         )
     except Exception as exc:
-        return {"status": "error", "message": f"Query JSON inválida: {exc}"}
+        return _build_transform_result(
+            "error",
+            index=script.source_index,
+            dest=script.dest_index,
+            error=f"Query JSON inválida: {exc}",
+        )
 
-    result = _run_reindex(
-        body=body,
-        log_prefix=(
-            f"Transformando documento {identifier} de {script.source_index} para {script.dest_index}"
-        ),
-        error_context=str(identifier),
+    logger.info(
+        f"Transformando em lote de {script.source_index} para {script.dest_index}"
     )
-    if result.get("status") == "success":
-        _enqueue_transformed_bronze(script.dest_index, identifier)
-        result["message"] = f"Documento {identifier} transformado: {result.get('message', '')}"
-    return result
+    return _run_reindex(body)
 
 
 def _enqueue_transformed_bronze(index_name, identifier):
@@ -201,10 +264,7 @@ def _enqueue_transformed_bronze(index_name, identifier):
         )
     except Exception as exc:
         logger.warning(
-            "Falha ao enfileirar ETL silver para %s/%s: %s",
-            index_name,
-            identifier,
-            exc,
+            f"Falha ao enfileirar ETL silver para {index_name}/{identifier}: {exc}"
         )
 
 
@@ -233,8 +293,7 @@ def transform_after_indexing(instance, model_name):
 
     if not script:
         logger.info(
-            "Nenhum script de transformação ativo encontrado para %s",
-            harvest_model_key
+            f"Nenhum script de transformação ativo encontrado para {harvest_model_key}"
         )
         return {"status": "skip", "message": f"Nenhum script ativo encontrado para {harvest_model_key}"}
 
@@ -242,7 +301,7 @@ def transform_after_indexing(instance, model_name):
     if not identifier:
         return {"status": "error", "message": "Instância em identifiesr; não é possível transformar."}
 
-    return transform_document(script, instance.identifier)
+    return transform_document(script, identifier)
 
 
 def reconcile_missing_bronze_etl(document_model):
@@ -255,7 +314,9 @@ def reconcile_missing_bronze_etl(document_model):
         ).values_list("dest_index", flat=True)
     )
     if not bronze_indices:
-        logger.info("Reconciliação. Fase 2. Não há script para transformar raw em bronze para %s.", model_name)
+        logger.info(
+            f"Reconciliação. Fase 2. Não há script para transformar raw em bronze para {model_name}."
+        )
         return
 
     indexed_qs = document_model.objects.filter(
@@ -270,10 +331,12 @@ def reconcile_missing_bronze_etl(document_model):
 
     missing_qs = indexed_qs.filter(~Exists(has_etl))
 
-    logger.info("Reconciliação. Fase 2. %s: %d sem ETL", model_name, missing_qs.count())
+    logger.info(f"Reconciliação. Fase 2. {model_name}: {missing_qs.count()} sem ETL")
     for obj in missing_qs.iterator():
         try:
             transform_after_indexing(instance=obj, model_name=model_name)
         except Exception as exc:
-            logger.warning("Reconcialiação. Fase 2. Falha ao criar ETL para documento do tipo %s (%s): %s",
-                            model_name, obj.identifier, exc)
+            logger.warning(
+                f"Reconcialiação. Fase 2. Falha ao criar ETL para documento do tipo "
+                f"{model_name} ({obj.identifier}): {exc}"
+            )
