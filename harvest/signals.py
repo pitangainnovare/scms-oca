@@ -3,7 +3,6 @@ import logging
 from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 
-from .bronze_transform import transform_after_indexing
 from .indexing import (
     get_index_name,
     delete_harvested_document,
@@ -51,6 +50,10 @@ def _should_index_raw_data(instance, created, update_fields):
 
 
 def _index_if_raw_data_saved(instance, created, update_fields):
+    """
+    Indexa raw no OpenSearch. A transformação bronze é orquestrada por página
+    na coleta / reconciliação, não no signal.
+    """
     if not _should_index_raw_data(instance, created, update_fields):
         return
 
@@ -59,18 +62,6 @@ def _index_if_raw_data_saved(instance, created, update_fields):
         instance=instance,
     )
     index_harvested_instance(instance=instance, index_name=index_name)
-
-    model_name = instance.__class__.__name__
-    try:
-        if instance.index_status == IndexStatus.SUCCESS and instance.raw_data:
-            transform_after_indexing(instance=instance, model_name=model_name)
-    except Exception as exc:
-        logger.warning(
-            "Falha na transformação bronze para %s (%s): %s",
-            model_name,
-            instance.identifier,
-            exc,
-        )
 
 
 @receiver(post_save, sender=HarvestedPreprint)
