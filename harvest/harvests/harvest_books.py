@@ -6,6 +6,7 @@ from django.db.models import Max
 from django.utils import timezone
 
 from core.utils.utils import fetch_data
+from harvest.bronze_transform import transform_indexed_page
 from harvest.exception_logs import ExceptionContext
 from harvest.indexing import delete_harvested_document
 from harvest.models import HarvestedBooks, HarvestErrorLogBooks
@@ -132,6 +133,7 @@ def _persist_harvested_books(
         )
     exc_context.save_to_db()
     exc_context.mark_status_harvest()
+    return harvested_obj
 
 
 def _base_url():
@@ -242,19 +244,28 @@ def harvest_books(
     since=None,
     headers=None,
 ):
+    page_ids = []
     for change in iter_changes(
         db_name=db_name,
         since=since,
         limit=limit,
         headers=headers,
     ):
-        harvest_single_book(
+        harvested_obj = harvest_single_book(
             base_url=_base_url(),
             db_name=db_name,
             payload=change,
             headers=headers,
             user=user,
         )
+        if harvested_obj and harvested_obj.is_indexed():
+            page_ids.append(harvested_obj.identifier)
+        if len(page_ids) >= limit:
+            transform_indexed_page("HarvestedBooks", page_ids)
+            page_ids = []
+
+    if page_ids:
+        transform_indexed_page("HarvestedBooks", page_ids)
 
 
 def harvest_single_book(
@@ -268,10 +279,10 @@ def harvest_single_book(
     doc_id = payload.get("id")
     last_seq = payload.get("seq")
     if not doc_id:
-        return
+        return None
     if payload.get("deleted"):
         _delete_book_record(identifier=doc_id)
-        return
+        return None
     base_url = _base_url() if not base_url else base_url
     if not base_url:
         logging.error("Sem base url definida para coleta de books")
@@ -306,7 +317,7 @@ def harvest_single_book(
                 payload=payload, monograph=parent
             )
 
-    _persist_harvested_books(
+    return _persist_harvested_books(
         user=user,
         source_url=doc_url,
         identifier=identifier,

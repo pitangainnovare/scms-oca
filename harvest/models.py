@@ -261,6 +261,9 @@ class BaseHarvestedData(CommonControlField):
         self.updated = timezone.now()
         self.save(update_fields=["harvest_status", "index_status", "updated"])
 
+    def is_indexed(self):
+        return bool(self.identifier) and self.index_status == IndexStatus.SUCCESS
+
     def set_attrs_from_article_info(self, article_info, datestamp):
         datestamp = datestamp if datestamp else None
         self.source_url = (

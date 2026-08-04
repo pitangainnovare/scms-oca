@@ -4,9 +4,10 @@ from urllib.parse import urlencode
 
 from django.conf import settings
 from django.utils import timezone
-from django.utils.dateparse import parse_date, parse_datetime
+from django.utils.dateparse import parse_date
 
 from core.utils.utils import fetch_data
+from harvest.bronze_transform import transform_indexed_page
 from harvest.exception_logs import ExceptionContext
 from harvest.models import HarvestedArticle, HarvestErrorLogArticle
 
@@ -120,11 +121,17 @@ def harvest_articles(
             logger.info("Nenhum artigo retornado. Finalizando coleta.")
             break
 
+        page_ids = []
         for item in items:
             try:
-                harvest_single_article_item(item=item, user=user)
+                harvested_obj = harvest_single_article_item(item=item, user=user)
+                if harvested_obj and harvested_obj.is_indexed():
+                    page_ids.append(harvested_obj.identifier)
             except Exception as exc:
                 logger.error(f"Erro ao persistir artigo ArticleMeta: {exc}")
+
+        if page_ids:
+            transform_indexed_page("HarvestedArticle", page_ids)
 
         offset += limit
         if len(items) < limit:
@@ -179,11 +186,14 @@ def record_article_failure(user, identifier, exception, field_name, context_data
 
 def harvest_single_article_code(code, user, collection=None):
     article_payload = fetch_article_detail(code=code, collection=collection)
-    return persist_article(
+    harvested_obj = persist_article(
         user=user,
         identifier=code,
         article_payload=article_payload,
     )
+    if harvested_obj and harvested_obj.is_indexed():
+        transform_indexed_page("HarvestedArticle", [harvested_obj.identifier])
+    return harvested_obj
 
 
 def persist_article(user, identifier, article_payload):
