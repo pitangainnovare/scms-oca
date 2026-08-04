@@ -34,11 +34,12 @@ from .harvests.harvest_articles import (
 from .harvests.harvest_data import harvest_data
 from .harvests.harvest_preprint import NODES, harvest_preprint
 from .bronze_transform import (
-    _build_batch_reindex_body,
-    _build_document_reindex_body,
-    transform_after_indexing,
-    transform_document,
+    _build_reindex_body,
+    _refresh_source_for_page,
+    _reindex_page,
     transform_documents_batch,
+    transform_documents_page,
+    transform_indexed_page,
 )
 from .indexing import get_index_name
 from .models import (
@@ -597,7 +598,7 @@ class HarvestArticlesTest(TestCase):
         self.assertIn("until=2024-01-31", url)
         self.assertIn("collection=scl", url)
 
-    @patch("harvest.signals.transform_after_indexing")
+    @patch("harvest.harvests.harvest_articles.transform_indexed_page")
     @patch("harvest.signals.index_harvested_instance")
     @patch("harvest.harvests.harvest_articles.fetch_article_detail")
     @patch("harvest.harvests.harvest_articles.fetch_article_identifiers_page")
@@ -606,13 +607,20 @@ class HarvestArticlesTest(TestCase):
         mock_fetch_page,
         mock_fetch_detail,
         mock_index,
-        mock_transform,
+        mock_transform_page,
     ):
         mock_fetch_page.side_effect = [
             ([self.identifier_item], {}),
             ([], {}),
         ]
         mock_fetch_detail.return_value = self.article_payload
+
+        def mark_indexed(instance, index_name=None, refresh=False):
+            instance.index_status = "success"
+            return True
+
+        mock_index.side_effect = mark_indexed
+        mock_transform_page.return_value = {"status": "success"}
 
         harvest_articles(user=self.user, limit=1, offset=0, from_date="1998-09-21")
 
@@ -624,8 +632,12 @@ class HarvestArticlesTest(TestCase):
         self.assertEqual(article.raw_data, self.article_payload)
         self.assertEqual(article.datestamp.date().isoformat(), "1998-09-21")
         mock_index.assert_called()
+        mock_transform_page.assert_called_once_with(
+            "HarvestedArticle",
+            ["S0100-879X1998000800011"],
+        )
 
-    @patch("harvest.signals.transform_after_indexing")
+    @patch("harvest.harvests.harvest_articles.transform_indexed_page")
     @patch("harvest.signals.index_harvested_instance")
     @patch("harvest.harvests.harvest_articles.fetch_article_detail")
     @patch("harvest.harvests.harvest_articles.fetch_article_identifiers_page")
@@ -634,7 +646,7 @@ class HarvestArticlesTest(TestCase):
         mock_fetch_page,
         mock_fetch_detail,
         mock_index,
-        mock_transform,
+        mock_transform_page,
     ):
         mock_fetch_page.side_effect = [
             ([self.identifier_item], {}),
@@ -648,6 +660,7 @@ class HarvestArticlesTest(TestCase):
         self.assertEqual(article.harvest_status, "failed")
         self.assertEqual(HarvestErrorLogArticle.objects.count(), 1)
         self.assertEqual(article.harvest_error_log.first().field_name, "raw_data")
+        mock_transform_page.assert_not_called()
 
     @patch("harvest.tasks.harvest_articles")
     def test_harvest_scielo_articles_uses_latest_datestamp_incrementally(self, mock_harvest_articles):
@@ -676,12 +689,12 @@ class HarvestArticleIndexingTests(TestCase):
             "raw_scielo_article_test",
         )
 
-    @patch("harvest.signals.transform_after_indexing")
+    @patch("harvest.harvests.harvest_data._transform_batches_by_type")
     @patch("harvest.signals.index_harvested_instance")
     @patch("harvest.harvests.harvest_data.fetch_dataverse_data")
     @patch("harvest.harvests.harvest_data.fetch_search_page")
     def test_harvest_data_paginates_using_total_count(
-        self, mock_fetch_search, mock_fetch_dataverse, mock_index, mock_transform
+        self, mock_fetch_search, mock_fetch_dataverse, mock_index, mock_transform_batches
     ):
         first_dataverse_item = {
             "type": "dataverse",
@@ -702,6 +715,12 @@ class HarvestArticleIndexingTests(TestCase):
             {"identifier": "dv-2"},
         ]
 
+        def mark_indexed(instance, index_name=None, refresh=False):
+            instance.index_status = "success"
+            return True
+
+        mock_index.side_effect = mark_indexed
+
         harvest_data(
             user=self.user,
             type="dataverse",
@@ -714,6 +733,12 @@ class HarvestArticleIndexingTests(TestCase):
         second_dataverse_obj = HarvestedSciELOData.objects.get(identifier="dv-2")
         self.assertEqual(dataverse_obj.raw_data["identifier"], "dv-1")
         self.assertEqual(second_dataverse_obj.raw_data["identifier"], "dv-2")
+        mock_transform_batches.assert_called_once()
+        self.assertEqual(mock_transform_batches.call_args.args[0], "HarvestedSciELOData")
+        self.assertEqual(
+            mock_transform_batches.call_args.args[1]["dataverse"],
+            ["dv-1", "dv-2"],
+        )
 
 
 class LanguageNormalizerTests(SimpleTestCase):
@@ -758,10 +783,7 @@ class ArticleBronzeTransformTests(TestCase):
         self.dest_index = "bronze_scielo_articles_test"
         self.transform_script = "ctx._source = ctx._source.raw_data;"
 
-        with (
-            patch("harvest.signals.index_harvested_instance"),
-            patch("harvest.signals.transform_after_indexing"),
-        ):
+        with patch("harvest.signals.index_harvested_instance"):
             self.article = HarvestedArticle.objects.create(
                 identifier=self.identifier,
                 creator=self.user,
@@ -784,12 +806,12 @@ class ArticleBronzeTransformTests(TestCase):
             creator=self.user,
         )
 
-    def test_build_document_reindex_body_uses_ids_query(self):
-        body = _build_document_reindex_body(
+    def test_build_reindex_body_uses_ids_query_for_identifier(self):
+        body = _build_reindex_body(
             source_index=self.source_index,
             dest_index=self.dest_index,
             transform_script=self.transform_script,
-            identifier=self.identifier,
+            identifiers=[self.identifier],
         )
 
         self.assertEqual(body["source"]["index"], self.source_index)
@@ -800,8 +822,22 @@ class ArticleBronzeTransformTests(TestCase):
             {"ids": {"values": [self.identifier]}},
         )
 
-    def test_build_batch_reindex_body_has_no_query_by_default(self):
-        body = _build_batch_reindex_body(
+    def test_build_reindex_body_uses_ids_query_for_identifiers_page(self):
+        identifiers = [self.identifier, "S0100-879X1998000800012"]
+        body = _build_reindex_body(
+            source_index=self.source_index,
+            dest_index=self.dest_index,
+            transform_script=self.transform_script,
+            identifiers=identifiers,
+        )
+
+        self.assertEqual(
+            body["source"]["query"],
+            {"ids": {"values": identifiers}},
+        )
+
+    def test_build_reindex_body_has_no_query_by_default(self):
+        body = _build_reindex_body(
             source_index=self.source_index,
             dest_index=self.dest_index,
             transform_script=self.transform_script,
@@ -811,17 +847,66 @@ class ArticleBronzeTransformTests(TestCase):
         self.assertEqual(body["dest"]["index"], self.dest_index)
         self.assertNotIn("query", body["source"])
 
-    def test_transform_document_requires_identifier(self):
-        result = transform_document(self.script, identifier=None)
+    def test_transform_documents_page_skips_empty_identifiers(self):
+        result = transform_documents_page(self.script, [])
 
-        self.assertEqual(result["status"], "error")
-        self.assertEqual(result["index"], self.source_index)
-        self.assertEqual(result["dest"], self.dest_index)
-        self.assertIn("identifier é obrigatório", result["error"])
+        self.assertEqual(result["status"], "skip")
+        self.assertIn("Nenhum identifier", result["error"])
 
     @patch("harvest.bronze_transform._enqueue_transformed_bronze")
     @patch("harvest.bronze_transform.client")
-    def test_transform_document_reindexes_single_article_and_enqueues_silver(
+    def test_transform_documents_page_refreshes_once_and_reindexes_ids(
+        self,
+        mock_client,
+        mock_enqueue,
+    ):
+        identifiers = [self.identifier, "S0100-879X1998000800012"]
+        mock_client.indices.exists.return_value = True
+        mock_client.reindex.return_value = {
+            "total": 2,
+            "created": 2,
+            "updated": 0,
+        }
+        mock_enqueue.return_value = True
+
+        result = transform_documents_page(self.script, identifiers)
+
+        mock_client.indices.refresh.assert_called_once_with(index=self.source_index)
+        mock_client.reindex.assert_called_once()
+        self.assertNotIn("refresh", mock_client.reindex.call_args.kwargs)
+        body = mock_client.reindex.call_args.kwargs["body"]
+        self.assertEqual(
+            body["source"]["query"],
+            {"ids": {"values": identifiers}},
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(result["enqueued"], 2)
+        self.assertEqual(mock_enqueue.call_count, 2)
+
+    @patch("harvest.bronze_transform._enqueue_transformed_bronze")
+    @patch("harvest.bronze_transform.client")
+    def test_transform_documents_page_errors_when_total_is_zero(
+        self,
+        mock_client,
+        mock_enqueue,
+    ):
+        mock_client.indices.exists.return_value = True
+        mock_client.reindex.return_value = {
+            "total": 0,
+            "created": 0,
+            "updated": 0,
+        }
+
+        result = transform_documents_page(self.script, [self.identifier])
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Nenhum documento encontrado", result["error"])
+        mock_enqueue.assert_not_called()
+
+    @patch("harvest.bronze_transform._enqueue_transformed_bronze")
+    @patch("harvest.bronze_transform.client")
+    def test_transform_documents_page_reindexes_single_id_and_enqueues_silver(
         self,
         mock_client,
         mock_enqueue,
@@ -832,11 +917,13 @@ class ArticleBronzeTransformTests(TestCase):
             "created": 1,
             "updated": 0,
         }
+        mock_enqueue.return_value = True
 
-        result = transform_document(self.script, self.identifier)
+        result = transform_documents_page(self.script, [self.identifier])
 
         mock_client.indices.refresh.assert_called_once_with(index=self.source_index)
         mock_client.reindex.assert_called_once()
+        self.assertNotIn("refresh", mock_client.reindex.call_args.kwargs)
         body = mock_client.reindex.call_args.kwargs["body"]
         self.assertEqual(body["source"]["index"], self.source_index)
         self.assertEqual(body["dest"]["index"], self.dest_index)
@@ -851,25 +938,6 @@ class ArticleBronzeTransformTests(TestCase):
         self.assertIsNone(result["error"])
         mock_enqueue.assert_called_once_with(self.dest_index, self.identifier)
 
-    @patch("harvest.bronze_transform._enqueue_transformed_bronze")
-    @patch("harvest.bronze_transform.client")
-    def test_transform_document_fails_when_article_not_found_in_raw(
-        self,
-        mock_client,
-        mock_enqueue,
-    ):
-        mock_client.indices.exists.return_value = True
-        mock_client.reindex.return_value = {
-            "total": 0,
-            "created": 0,
-            "updated": 0,
-        }
-
-        result = transform_document(self.script, self.identifier)
-
-        self.assertEqual(result["status"], "success")
-        mock_enqueue.assert_not_called()
-
     @patch("harvest.bronze_transform.client")
     def test_transform_documents_batch_reindexes_without_ids_query(self, mock_client):
         mock_client.indices.exists.return_value = True
@@ -881,6 +949,8 @@ class ArticleBronzeTransformTests(TestCase):
 
         result = transform_documents_batch(self.script)
 
+        mock_client.reindex.assert_called_once()
+        self.assertNotIn("refresh", mock_client.reindex.call_args.kwargs)
         mock_client.indices.refresh.assert_not_called()
         body = mock_client.reindex.call_args.kwargs["body"]
         self.assertEqual(body["source"]["index"], self.source_index)
@@ -892,26 +962,138 @@ class ArticleBronzeTransformTests(TestCase):
         self.assertEqual(result["index"], self.source_index)
         self.assertEqual(result["dest"], self.dest_index)
 
-    @patch("harvest.bronze_transform.transform_document")
-    def test_transform_after_indexing_uses_article_script(self, mock_transform_document):
-        mock_transform_document.return_value = {"status": "success"}
+    @patch("harvest.bronze_transform.transform_documents_page")
+    def test_transform_indexed_page_uses_article_script(self, mock_transform_page):
+        mock_transform_page.return_value = {"status": "success"}
 
-        result = transform_after_indexing(
-            instance=self.article,
-            model_name="HarvestedArticle",
+        result = transform_indexed_page(
+            "HarvestedArticle",
+            [self.identifier],
         )
 
-        mock_transform_document.assert_called_once_with(self.script, self.identifier)
+        mock_transform_page.assert_called_once_with(self.script, [self.identifier])
         self.assertEqual(result["status"], "success")
 
-    def test_transform_after_indexing_skips_when_no_active_script(self):
+    def test_transform_indexed_page_returns_none_without_script(self):
         self.script.is_active = False
         self.script.save(update_fields=["is_active"])
 
-        result = transform_after_indexing(
-            instance=self.article,
-            model_name="HarvestedArticle",
+        result = transform_indexed_page("HarvestedArticle", [self.identifier])
+
+        self.assertIsNone(result)
+
+    def test_transform_indexed_page_returns_none_for_empty_identifiers(self):
+        self.assertIsNone(transform_indexed_page("HarvestedArticle", []))
+
+    @patch("harvest.bronze_transform.transform_documents_page")
+    def test_transform_indexed_page_logs_error_on_failure(self, mock_transform_page):
+        mock_transform_page.return_value = {
+            "status": "error",
+            "error": "boom",
+        }
+
+        with self.assertLogs("harvest.bronze_transform", level="ERROR") as logs:
+            result = transform_indexed_page("HarvestedArticle", [self.identifier])
+
+        self.assertEqual(result["status"], "error")
+        self.assertTrue(any("boom" in line for line in logs.output))
+
+    @patch("harvest.bronze_transform.client")
+    def test_refresh_source_for_page_returns_error_on_failure(self, mock_client):
+        mock_client.indices.refresh.side_effect = RuntimeError("refresh failed")
+
+        result = _refresh_source_for_page(self.script, [self.identifier])
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("refresh", result["error"].lower())
+
+    @patch("harvest.bronze_transform.client")
+    def test_refresh_source_for_page_returns_none_on_success(self, mock_client):
+        result = _refresh_source_for_page(self.script, [self.identifier])
+
+        mock_client.indices.refresh.assert_called_once_with(index=self.source_index)
+        self.assertIsNone(result)
+
+    @patch("harvest.bronze_transform.client")
+    def test_reindex_page_errors_when_total_is_zero(self, mock_client):
+        mock_client.indices.exists.return_value = True
+        mock_client.reindex.return_value = {
+            "total": 0,
+            "created": 0,
+            "updated": 0,
+        }
+
+        result = _reindex_page(self.script, [self.identifier])
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Nenhum documento encontrado", result["error"])
+
+    @patch("harvest.bronze_transform.transform_indexed_page")
+    def test_reconcile_missing_bronze_etl_transforms_in_pages(self, mock_transform_page):
+        from .bronze_transform import reconcile_missing_bronze_etl
+
+        mock_transform_page.return_value = {"status": "success"}
+        with patch("harvest.signals.index_harvested_instance"):
+            HarvestedArticle.objects.create(
+                identifier="S0100-879X1998000800012",
+                creator=self.user,
+                harvest_status="success",
+                index_status="success",
+                raw_data={"code": "S0100-879X1998000800012"},
+            )
+            HarvestedArticle.objects.create(
+                identifier="S0100-879X1998000800013",
+                creator=self.user,
+                harvest_status="success",
+                index_status="success",
+                raw_data={"code": "S0100-879X1998000800013"},
+            )
+
+        reconcile_missing_bronze_etl(HarvestedArticle, page_size=2)
+
+        self.assertEqual(mock_transform_page.call_count, 2)
+        all_ids = []
+        for call in mock_transform_page.call_args_list:
+            self.assertEqual(call.args[0], "HarvestedArticle")
+            self.assertLessEqual(len(call.args[1]), 2)
+            all_ids.extend(call.args[1])
+        self.assertCountEqual(
+            all_ids,
+            [
+                self.identifier,
+                "S0100-879X1998000800012",
+                "S0100-879X1998000800013",
+            ],
         )
 
-        self.assertEqual(result["status"], "skip")
-        self.assertIn("Nenhum script ativo", result["message"])
+    @patch("harvest.bronze_transform.transform_indexed_page")
+    def test_reconcile_missing_bronze_etl_exits_when_empty(self, mock_transform_page):
+        from .bronze_transform import reconcile_missing_bronze_etl
+        from etl.models import EtlItemProcess
+
+        EtlItemProcess.objects.create(
+            source_index=self.dest_index,
+            external_id=self.identifier,
+            document_type="article",
+        )
+
+        reconcile_missing_bronze_etl(HarvestedArticle, page_size=2)
+
+        mock_transform_page.assert_not_called()
+
+    @patch("harvest.bronze_transform.transform_indexed_page")
+    @patch("harvest.signals.index_harvested_instance", return_value=True)
+    def test_signal_indexes_raw_without_transform(
+        self,
+        mock_index,
+        mock_transform_page,
+    ):
+        HarvestedArticle.objects.create(
+            identifier="S0100-879X1998000800099",
+            creator=self.user,
+            harvest_status="success",
+            raw_data={"code": "S0100-879X1998000800099"},
+        )
+
+        mock_index.assert_called()
+        mock_transform_page.assert_not_called()
