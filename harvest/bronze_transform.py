@@ -4,6 +4,7 @@ Utiliza scripts Painless configurados via interface.
 """
 import json
 import logging
+from collections import defaultdict
 
 from django.db.models import Exists, OuterRef
 from django.utils import timezone
@@ -17,53 +18,31 @@ from .utils import source_hash
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_TRANSFORM_PAGE_SIZE = 500
 
 client = get_opensearch_client()
 
+
 def index_exists(index_name):
-    """
-    Verifica se um índice existe no OpenSearch.
-
-    Mantém o comportamento simples (True/False) para facilitar reuso.
-    """
     return bool(client.indices.exists(index=index_name))
-
-
-def _missing_index_error(source_index, dest_index):
-    return {
-        "status": "error",
-        "message": (
-            "O indice source ou destino: "
-            f"{source_index} / {dest_index} não existe no opensearch"
-        ),
-    }
 
 
 def _ensure_indices_exist(source_index, dest_index):
     if not index_exists(source_index) or not index_exists(dest_index):
-        return _missing_index_error(source_index, dest_index)
-    return None
+        raise RuntimeError(
+            f"O indice source ou destino: {source_index} / {dest_index} "
+            "não existe no opensearch"
+        )
 
 
-def _parse_query_script(query_script, identifier=None):
-    """
-    Retorna um dict de query (para `source.query` do reindex).
-
-    - `query_script` pode ser `str` (JSON) ou `dict`.
-    - Se `identifier` for informado, substitui placeholder `{{identifier}}`.
-    """
+def _parse_query_script(query_script):
     if query_script is None or query_script == "":
         raise ValueError("query_script vazio")
 
     if isinstance(query_script, dict):
         query = query_script
     elif isinstance(query_script, str):
-        raw = query_script
-        if identifier:
-            raw = raw.replace("{{identifier}}", identifier).replace(
-                "{{ identifier }}", identifier
-            )
-        query = json.loads(raw)
+        query = json.loads(query_script)
     else:
         raise TypeError("query_script deve ser str (JSON) ou dict")
 
@@ -72,49 +51,22 @@ def _parse_query_script(query_script, identifier=None):
     return query
 
 
-def _base_reindex_body(source_index, dest_index, transform_script):
-    return {
+def _build_reindex_body(
+    source_index,
+    dest_index,
+    transform_script,
+    query_script=None,
+    identifiers=None,
+):
+    body = {
         "source": {"index": source_index},
         "dest": {"index": dest_index},
         "script": {"lang": "painless", "source": transform_script},
     }
-
-
-def _build_document_reindex_body(
-    source_index,
-    dest_index,
-    transform_script,
-    identifier,
-    query_script=None,
-):
-    body = _base_reindex_body(
-        source_index=source_index,
-        dest_index=dest_index,
-        transform_script=transform_script,
-    )
-    if query_script:
-        body["source"]["query"] = _parse_query_script(
-            query_script=query_script,
-            identifier=identifier,
-        )
-    else:
-        body["source"]["query"] = {"ids": {"values": [identifier]}}
-    return body
-
-
-def _build_batch_reindex_body(
-    source_index,
-    dest_index,
-    transform_script,
-    query_script=None,
-):
-    body = _base_reindex_body(
-        source_index=source_index,
-        dest_index=dest_index,
-        transform_script=transform_script,
-    )
-    if query_script:
-        body["source"]["query"] = _parse_query_script(query_script=query_script)
+    if identifiers:
+        body["source"]["query"] = {"ids": {"values": list(identifiers)}}
+    elif query_script:
+        body["source"]["query"] = _parse_query_script(query_script)
     return body
 
 
@@ -139,13 +91,11 @@ def _build_transform_result(
 
 
 def _run_reindex(body):
-    index = (body.get("source") or {}).get("index")
-    dest = (body.get("dest") or {}).get("index")
+    index = body["source"]["index"]
+    dest = body["dest"]["index"]
     try:
-        missing = _ensure_indices_exist(index, dest)
-        if missing:
-            raise RuntimeError(missing["message"])
-        response = client.reindex(body=body, refresh=True)
+        _ensure_indices_exist(index, dest)
+        response = client.reindex(body=body)
         return _build_transform_result(
             "success",
             index=index,
@@ -165,61 +115,126 @@ def _run_reindex(body):
         )
 
 
-def transform_document(script, identifier):
+def get_active_transformation_scripts(model_name, type_data=None):
     """
-    Transforma um único documento raw → bronze.
-
-    Usado no fluxo automático após indexação (signals / reconciliação).
+    Scripts ativos do modelo.
+    SciELO Data: chave `model_type`, ou todos os variantes se type_data omitido.
     """
-    if not identifier:
-        return _build_transform_result(
-            "error",
-            index=script.source_index,
-            dest=script.dest_index,
-            error="identifier é obrigatório para transformação unitária.",
-        )
+    qs = TransformationScript.objects.filter(is_active=True)
+    if model_name == "HarvestedSciELOData":
+        if type_data:
+            return qs.filter(harvest_model=f"{model_name}_{type_data}")
+        return qs.filter(harvest_model__startswith=f"{model_name}_")
+    return qs.filter(harvest_model=model_name)
 
+
+def _refresh_source_for_page(script, identifiers):
     try:
         client.indices.refresh(index=script.source_index)
     except Exception as exc:
-        logger.error(
+        message = (
             f"Falha ao refresh do índice fonte {script.source_index} "
-            f"antes da transformação de {identifier}: {exc}"
+            f"antes da transformação de {len(identifiers)} documento(s): {exc}"
         )
         return _build_transform_result(
             "error",
             index=script.source_index,
             dest=script.dest_index,
-            error=str(exc),
+            error=message,
         )
 
-    body = _build_document_reindex_body(
+
+def _reindex_page(script, identifiers):
+    body = _build_reindex_body(
         source_index=script.source_index,
         dest_index=script.dest_index,
         transform_script=script.transform_script,
-        query_script=getattr(script, "query_script", None),
-        identifier=identifier,
+        identifiers=identifiers,
     )
 
     logger.info(
-        f"Transformando documento {identifier} de {script.source_index} para {script.dest_index}"
+        f"Transformando página com {len(identifiers)} documento(s) de "
+        f"{script.source_index} para {script.dest_index}"
     )
     result = _run_reindex(body)
     if result.get("status") != "success":
         return result
-    if (result.get("created", 0) + result.get("updated", 0)) > 0:
-        _enqueue_transformed_bronze(script.dest_index, identifier)
+
+    if result.get("total", 0) == 0:
+        message = (
+            f"Nenhum documento encontrado em {script.source_index} "
+            f"para {len(identifiers)} identifier(s)."
+        )
+        return _build_transform_result(
+            "error",
+            index=script.source_index,
+            dest=script.dest_index,
+            total=0,
+            error=message,
+        )
+
+    return result
+
+
+def transform_documents_page(script, identifiers):
+    """
+    Transforma uma página raw → bronze:
+    1 refresh do índice fonte + 1 reindex por lista de IDs.
+    """
+    if not identifiers:
+        return _build_transform_result(
+            "skip",
+            index=script.source_index,
+            dest=script.dest_index,
+            error="Nenhum identifier informado para transformação paginada.",
+        )
+
+    if error_result := _refresh_source_for_page(script, identifiers):
+        return error_result
+
+    result = _reindex_page(script, identifiers)
+    if result.get("status") != "success":
+        return result
+
+    result["enqueued"] = sum(
+        1
+        for identifier in identifiers
+        if _enqueue_transformed_bronze(script.dest_index, identifier)
+    )
+    return result
+
+
+def transform_indexed_page(model_name, identifiers, type_data=None):
+    """
+    Resolve o script ativo e transforma a página de identifiers.
+
+    Retorna None quando não há script ativo (catch-up cobre depois).
+    """
+    if not identifiers:
+        return None
+
+    script = get_active_transformation_scripts(model_name, type_data=type_data).first()
+    if not script:
+        logger.info(
+            f"Nenhum script ativo encontrado para {model_name}"
+            + (f"_{type_data}" if type_data else "")
+        )
+        return None
+
+    result = transform_documents_page(script, identifiers)
+    if result.get("status") == "error":
+        logger.error(
+            f"Falha ao transformar página {model_name}"
+            + (f" type={type_data}" if type_data else "")
+            + f" ({len(identifiers)} docs): {result.get('error')}"
+        )
     return result
 
 
 def transform_documents_batch(script):
-    """
-    Transforma documentos raw → bronze em lote.
-
-    Usado pelo botão de execução na interface administrativa.
-    """
+    """Reindex completo (botão admin). Não é o caminho da coleta contínua."""
     try:
-        body = _build_batch_reindex_body(
+        body = _build_reindex_body(
             source_index=script.source_index,
             dest_index=script.dest_index,
             transform_script=script.transform_script,
@@ -244,7 +259,7 @@ def _enqueue_transformed_bronze(index_name, identifier):
         response = client.get(index=index_name, id=identifier)
         source = response.get("_source") or {}
         if not EtlPipelineConfig.objects.select_for_source(index_name, source):
-            return
+            return False
         payload_hash = source_hash(source)
         client.update(
             index=index_name,
@@ -262,56 +277,27 @@ def _enqueue_transformed_bronze(index_name, identifier):
             external_id=identifier,
             source_payload=source,
         )
+        return True
     except Exception as exc:
         logger.warning(
             f"Falha ao enfileirar ETL silver para {index_name}/{identifier}: {exc}"
         )
+        return False
 
 
-def transform_after_indexing(instance, model_name):
-    """
-    Função auxiliar para ser chamada após indexação.
-    Busca o TransformationScript pelo harvest_model e executa a transformação.
-
-    Args:
-        instance: Instância do modelo (HarvestedBooks, HarvestedPreprint, etc)
-        model_name: Nome da classe do modelo
-
-    Returns:
-        Dict com status e mensagem da operação
-    """
-    harvest_model_key = model_name
-    if model_name == "HarvestedSciELOData":
-        type_data = getattr(instance, "type_data", None)
-        if type_data:
-            harvest_model_key = f"{model_name}_{type_data}"
-
-    script = TransformationScript.objects.filter(
-        harvest_model=harvest_model_key,
-        is_active=True
-    ).first()
-
-    if not script:
-        logger.info(
-            f"Nenhum script de transformação ativo encontrado para {harvest_model_key}"
-        )
-        return {"status": "skip", "message": f"Nenhum script ativo encontrado para {harvest_model_key}"}
-
-    identifier = getattr(instance, "identifier", None)
-    if not identifier:
-        return {"status": "error", "message": "Instância em identifiesr; não é possível transformar."}
-
-    return transform_document(script, identifier)
+def _transform_batches_by_type(model_name, batches_by_type):
+    """Dispara transform_indexed_page para cada lote não vazio."""
+    for type_data, identifiers in batches_by_type.items():
+        if identifiers:
+            transform_indexed_page(model_name, identifiers, type_data=type_data)
 
 
-def reconcile_missing_bronze_etl(document_model):
+def reconcile_missing_bronze_etl(document_model, page_size=DEFAULT_TRANSFORM_PAGE_SIZE):
     model_name = document_model.__name__
-
     bronze_indices = set(
-        TransformationScript.objects.filter(
-            harvest_model=model_name,
-            is_active=True,
-        ).values_list("dest_index", flat=True)
+        get_active_transformation_scripts(model_name).values_list(
+            "dest_index", flat=True
+        )
     )
     if not bronze_indices:
         logger.info(
@@ -330,13 +316,21 @@ def reconcile_missing_bronze_etl(document_model):
     )
 
     missing_qs = indexed_qs.filter(~Exists(has_etl))
+    missing_count = missing_qs.count()
+    logger.info(f"Reconciliação. Fase 2. {model_name}: {missing_count} sem ETL")
+    if missing_count == 0:
+        return
 
-    logger.info(f"Reconciliação. Fase 2. {model_name}: {missing_qs.count()} sem ETL")
+    batches_by_type = defaultdict(list)
     for obj in missing_qs.iterator():
-        try:
-            transform_after_indexing(instance=obj, model_name=model_name)
-        except Exception as exc:
-            logger.warning(
-                f"Reconcialiação. Fase 2. Falha ao criar ETL para documento do tipo "
-                f"{model_name} ({obj.identifier}): {exc}"
+        type_data = getattr(obj, "type_data", None)
+        batches_by_type[type_data].append(obj.identifier)
+        if len(batches_by_type[type_data]) >= page_size:
+            transform_indexed_page(
+                model_name,
+                batches_by_type[type_data],
+                type_data=type_data,
             )
+            batches_by_type[type_data] = []
+
+    _transform_batches_by_type(model_name, batches_by_type)
