@@ -40,7 +40,7 @@ def get_index_name(model_name=None, instance=None, type_data=None):
     return {
         "HarvestedArticle": getattr(settings, "OS_INDEX_RAW_ARTICLE", None),
         "HarvestedPreprint": getattr(settings, "OS_INDEX_RAW_PREPRINT", None),
-        "HarvestedBooks": getattr(settings, "OS_INDEX_RAW_BOOK", None),
+        "HarvestedBook": getattr(settings, "OS_INDEX_RAW_BOOK", None),
     }.get(model_name)
 
 
@@ -48,7 +48,7 @@ def _get_error_log_fk_field(instance):
     return {
         "HarvestedArticle": "article",
         "HarvestedPreprint": "preprint",
-        "HarvestedBooks": "book",
+        "HarvestedBook": "book",
         "HarvestedSciELOData": "scielo_data",
     }.get(instance.__class__.__name__)
 

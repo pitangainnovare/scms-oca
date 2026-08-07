@@ -20,7 +20,7 @@ RAW_INDEX_BODY = {
 RAW_INDICES = {
     "article": ("HarvestedArticle", "OS_INDEX_RAW_ARTICLE"),
     "preprint": ("HarvestedPreprint", "OS_INDEX_RAW_PREPRINT"),
-    "books": ("HarvestedBooks", "OS_INDEX_RAW_BOOK"),
+    "books": ("HarvestedBook", "OS_INDEX_RAW_BOOK"),
     "dataset": ("HarvestedSciELOData(dataset)", "OS_INDEX_RAW_SCIELO_DATA_DATASET"),
     "dataverse": (
         "HarvestedSciELOData(dataverse)",

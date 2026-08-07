@@ -15,7 +15,7 @@ from .bronze_transform import transform_documents_batch
 from .models import (
     GlobalMetricsUploadFile,
     HarvestedArticle,
-    HarvestedBooks,
+    HarvestedBook,
     HarvestedPreprint,
     HarvestedSciELOData,
     TransformationScript,
@@ -80,8 +80,8 @@ class HarvestedSciELODataViewSet(SnippetViewSet):
     ordering = ("-created",)
 
 
-class HarvestedBooksViewSet(SnippetViewSet):
-    model = HarvestedBooks
+class HarvestedBookViewSet(SnippetViewSet):
+    model = HarvestedBook
     icon = "doc-full"
     menu_label = _("Books")
     add_to_admin_menu = False
@@ -132,7 +132,7 @@ class HarvestViewSetGroup(SnippetViewSetGroup):
         HarvestedArticleViewSet,
         HarvestedPreprintViewSet,
         HarvestedSciELODataViewSet,
-        HarvestedBooksViewSet,
+        HarvestedBookViewSet,
         TransformationScriptViewSet,
         GlobalMetricsUploadFileViewSet,
     )

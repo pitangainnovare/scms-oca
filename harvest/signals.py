@@ -8,7 +8,7 @@ from .indexing import (
     delete_harvested_document,
     index_harvested_instance,
 )
-from .models import HarvestedArticle, HarvestedBooks, HarvestedPreprint, HarvestedSciELOData, IndexStatus
+from .models import HarvestedArticle, HarvestedBook, HarvestedPreprint, HarvestedSciELOData, IndexStatus
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ def index_article_on_save(sender, instance, created, update_fields=None, **kwarg
     _index_if_raw_data_saved(instance, created, update_fields)
 
 
-@receiver(post_save, sender=HarvestedBooks)
+@receiver(post_save, sender=HarvestedBook)
 def index_books_on_save(sender, instance, created, update_fields=None, **kwargs):
     _index_if_raw_data_saved(instance, created, update_fields)
 
@@ -94,12 +94,12 @@ def track_article_raw_data(sender, instance, **kwargs):
     _store_previous_raw_data(instance)
 
 
-@receiver(pre_save, sender=HarvestedBooks)
+@receiver(pre_save, sender=HarvestedBook)
 def track_books_raw_data(sender, instance, **kwargs):
     _store_previous_raw_data(instance)
 
 
-@receiver(post_delete, sender=HarvestedBooks)
+@receiver(post_delete, sender=HarvestedBook)
 def delete_books_on_delete(sender, instance, **kwargs):
     index_name = get_index_name(model_name=instance.__class__.__name__)
     if not index_name:

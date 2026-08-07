@@ -41,7 +41,7 @@ class HarvestModelChoice(models.TextChoices):
 
     ARTICLE = "HarvestedArticle", "Article"
     PREPRINT = "HarvestedPreprint", "Preprint"
-    BOOKS = "HarvestedBooks", "Books"
+    BOOK = "HarvestedBook", "Book"
     SCIELO_DATA_DATASET = "HarvestedSciELOData_dataset", "SciELO Data - Dataset"
     SCIELO_DATA_DATAVERSE = "HarvestedSciELOData_dataverse", "SciELO Data - Dataverse"
 
@@ -324,7 +324,7 @@ class HarvestedArticle(BaseHarvestedData, ClusterableModel):
             return None
 
 
-class HarvestedBooks(BaseHarvestedData, ClusterableModel):
+class HarvestedBook(BaseHarvestedData, ClusterableModel):
     type_data = models.CharField(
         _("Tipo de data"),
         max_length=20,
@@ -356,7 +356,7 @@ class HarvestedBooks(BaseHarvestedData, ClusterableModel):
     ]
 
     class Meta:
-        verbose_name = _("Dados de Scielo Books")
+        verbose_name = _("Dados de Scielo Book")
         verbose_name_plural = _("Dados de Scielo Books")
 
 
@@ -434,9 +434,9 @@ class HarvestErrorLogArticle(BaseHarvestErrorLog):
     )
 
 
-class HarvestErrorLogBooks(BaseHarvestErrorLog):
+class HarvestErrorLogBook(BaseHarvestErrorLog):
     book = ParentalKey(
-        HarvestedBooks, related_name="harvest_error_log", on_delete=models.CASCADE
+        HarvestedBook, related_name="harvest_error_log", on_delete=models.CASCADE
     )
 
 

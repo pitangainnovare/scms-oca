@@ -27,7 +27,7 @@ from harvest.indexing import index_harvested_instance, index_harvested_raw_data
 from .bronze_transform import reconcile_missing_bronze_etl
 from .models import (
     HarvestedArticle,
-    HarvestedBooks,
+    HarvestedBook,
     HarvestedPreprint,
     HarvestedSciELOData,
     HarvestErrorLogArticle,
@@ -248,7 +248,7 @@ def retry_harvest_failed_articles(username, user_id=None):
 
 @celery_app.task(name="Retry failed books")
 def retry_failed_books(username, user_id=None, db_name="scielobooks_1a", headers=None):
-    failed_books = HarvestedBooks.objects.filter(
+    failed_books = HarvestedBook.objects.filter(
         harvest_status=HarvestStatus.FAILED
     ).values_list("identifier", flat=True)
     if not failed_books:
@@ -291,7 +291,7 @@ def reindex_failed_articles(user_id=None):
 
 @celery_app.task(name="Reindex failed books")
 def reindex_failed_books(user_id=None):
-    failed = HarvestedBooks.objects.filter(index_status=IndexStatus.FAILED)
+    failed = HarvestedBook.objects.filter(index_status=IndexStatus.FAILED)
     for obj in failed.iterator():
         index_harvested_instance(instance=obj, index_name=obj.index_name)
 
@@ -329,7 +329,7 @@ def apply_global_metrics_upload_to_silver(
 def reconcile_harvest_pipeline(document_type, user_id=None):
     DOCUMENT_TYPE_TO_DOCUMENT_MODEL = {
         "article": HarvestedArticle,
-        "book": HarvestedBooks,
+        "book": HarvestedBook,
         "data": HarvestedSciELOData,
         "preprint": HarvestedPreprint,
     }
