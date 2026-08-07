@@ -339,8 +339,19 @@ BRONZE_MAPPING = {
             'type': {
                 'type': 'keyword'
             },
-            'legacy_type': {
-                'type': 'keyword'
+            'related_identifiers': {
+                'type': 'object',
+                'properties': {
+                    'id': {
+                        'type': 'keyword'
+                    },
+                    'related_article_type': {
+                        'type': 'keyword'
+                    },
+                    'ext_link_type': {
+                        'type': 'keyword'
+                    }
+                }
             },
             'updated_at': {
                 'type': 'date'

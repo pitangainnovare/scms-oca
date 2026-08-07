@@ -90,6 +90,22 @@ List buildDoiWithLang(def rawDoi) {
   return items;
 }
 
+// Extrai identificadores relacionados a partir de article.v241.
+List buildRelatedIdentifiers(def rawRelated) {
+  List items = new ArrayList();
+  if (!(rawRelated instanceof List)) return items;
+  for (item in (List) rawRelated) {
+    if (!(item instanceof Map)) continue;
+    Map entry = (Map) item;
+    Map obj = new HashMap();
+    putStringIfPresent(obj, "id", entry.get("i"));
+    putStringIfPresent(obj, "related_article_type", entry.get("t"));
+    putStringIfPresent(obj, "ext_link_type", entry.get("n"));
+    if (!obj.isEmpty()) items.add(obj);
+  }
+  return items;
+}
+
 // ---------------------------------------------------------------------------
 // Leitura da origem
 // ---------------------------------------------------------------------------
@@ -105,12 +121,8 @@ String primaryLang = getScalar(article, "v40");
 
 Map out = new HashMap();
 
-// type: research-article vira "article"; original_type guarda o valor bruto.
-String documentType = toStringOrNull(root.get("document_type"));
-if (documentType != null) {
-  out.put("legacy_type", documentType);
-  out.put("type", "research-article".equals(documentType) ? "article" : documentType);
-}
+
+putStringIfPresent(out, "document_type", root.get("document_type"));
 
 // Identificadores basicos.
 putStringIfPresent(out, "code", root.get("code"));
@@ -122,6 +134,12 @@ putStringIfPresent(ids, "doi", root.get("doi"));
 List doiWithLang = article != null ? buildDoiWithLang(article.get("v337")) : new ArrayList();
 if (!doiWithLang.isEmpty()) ids.put("doi_with_lang", doiWithLang);
 if (!ids.isEmpty()) out.put("ids", ids);
+
+// Identificadores relacionados (v241), ex.: DOIs de reviewer-report.
+List relatedIdentifiers = article != null
+  ? buildRelatedIdentifiers(article.get("v241"))
+  : new ArrayList();
+if (!relatedIdentifiers.isEmpty()) out.put("related_identifiers", relatedIdentifiers);
 
 // Datas.
 String createdAt = isoDate(root.get("created_at"));
