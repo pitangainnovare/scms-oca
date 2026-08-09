@@ -11,7 +11,7 @@ from harvest.bronze_transform import _transform_batches_by_type
 from harvest.exception_logs import ExceptionContext
 from harvest.models import HarvestedSciELOData, HarvestErrorLogSciELOData
 
-DEFAULT_HEADERS = {"Accept": "text/xml; charset=utf-8", "user-agent": settings.USER_AGENT}
+DEFAULT_HEADERS = {"Accept": "application/json", "user-agent": settings.USER_AGENT}
 
 API_SCIELO_DATA = settings.SITE_SCIELO_DATA + "/api/search"
 DATASET_URL = settings.SITE_SCIELO_DATA + "/api/datasets/:persistentId/"
