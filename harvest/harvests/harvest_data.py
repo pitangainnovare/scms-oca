@@ -187,7 +187,7 @@ def _fetch_data_by_type(item):
         data["publisher"] = {
             "name": publisher,
             "identifier": dataverse_identifier,
-            "url": dataverse_obj.get_url_dataverse
+            "url": dataverse_obj.get_url_dataverse if dataverse_obj else None,
         }
         return data, source_url, type_data, global_id
 
