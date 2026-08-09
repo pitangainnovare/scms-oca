@@ -83,7 +83,8 @@ class GlobalMetricsUploadFileTests(TestCase):
                 )
                 first = GlobalMetricsUploadFile(creator=self.user)
                 first.file = first_file
-                first.save()
+                with self.captureOnCommitCallbacks(execute=True):
+                    first.save()
 
                 second_file = SimpleUploadedFile(
                     "metrics.xlsx",
@@ -92,7 +93,8 @@ class GlobalMetricsUploadFileTests(TestCase):
                 )
                 second = GlobalMetricsUploadFile(creator=self.user)
                 second.file = second_file
-                second.save()
+                with self.captureOnCommitCallbacks(execute=True):
+                    second.save()
 
                 self.assertEqual(GlobalMetricsUploadFile.objects.count(), 1)
                 self.assertEqual(first.pk, second.pk)
