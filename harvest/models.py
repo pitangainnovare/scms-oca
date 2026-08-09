@@ -124,6 +124,9 @@ class GlobalMetricsUploadFile(CommonControlField):
             existing.file.delete(save=False)
 
         self.pk = existing.pk
+        self.created = existing.created
+        if not self.creator_id:
+            self.creator = existing.creator
         self._state.adding = False
         return True
 
