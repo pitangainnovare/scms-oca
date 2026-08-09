@@ -45,11 +45,11 @@ from .indexing import get_index_name
 from .models import (
     GlobalMetricsUploadFile,
     HarvestedArticle,
-    HarvestedBooks,
+    HarvestedBook,
     HarvestedPreprint,
     HarvestedSciELOData,
     HarvestErrorLogArticle,
-    HarvestErrorLogBooks,
+    HarvestErrorLogBook,
     HarvestErrorLogPreprint,
     HarvestErrorLogSciELOData,
     HarvestModelChoice,
@@ -488,13 +488,13 @@ class HarvestTestOAIPMH(TestCase):
         )
 
     def test_exception_context_saves_book_log(self):
-        book = HarvestedBooks.objects.create(
+        book = HarvestedBook.objects.create(
             identifier="oai:scielo:book:1",
             creator=self.user,
         )
         exc_context = ExceptionContext(
             harvest_object=book,
-            log_model=HarvestErrorLogBooks,
+            log_model=HarvestErrorLogBook,
             fk_field="book",
         )
         exc_context.add_exception(
@@ -503,8 +503,8 @@ class HarvestTestOAIPMH(TestCase):
         )
         exc_context.save_to_db()
         exc_context.verify_obj_as_failed()
-        self.assertEqual(HarvestErrorLogBooks.objects.count(), 1)
-        log = HarvestErrorLogBooks.objects.first()
+        self.assertEqual(HarvestErrorLogBook.objects.count(), 1)
+        log = HarvestErrorLogBook.objects.first()
         self.assertEqual(log.book, book)
         self.assertEqual(log.field_name, "identifier")
         self.assertEqual(log.exception_type, "KeyError")
