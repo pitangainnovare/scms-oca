@@ -3,13 +3,14 @@ Funções responsáveis por indexar os dados brutos (quando disponível o raw_da
 """
 
 import logging
+from collections import defaultdict
 
 from django.conf import settings
 from django.utils import timezone
 
 from search_gateway.client import get_opensearch_client
 
-from .bronze_transform import transform_after_indexing
+from .bronze_transform import DEFAULT_TRANSFORM_PAGE_SIZE, _transform_batches_by_type, transform_indexed_page
 from .exception_logs import ExceptionContext
 from .models import HarvestStatus, IndexStatus
 from .utils import source_hash
@@ -35,55 +36,72 @@ def get_index_name(model_name=None, instance=None, type_data=None):
             )
         }
         return index.get(effective_type, None)
-    
+
     return {
+        "HarvestedArticle": getattr(settings, "OS_INDEX_RAW_ARTICLE", None),
         "HarvestedPreprint": getattr(settings, "OS_INDEX_RAW_PREPRINT", None),
-        "HarvestedBooks": getattr(settings, "OS_INDEX_RAW_BOOK", None),
+        "HarvestedBook": getattr(settings, "OS_INDEX_RAW_BOOK", None),
     }.get(model_name)
 
 
 def _get_error_log_fk_field(instance):
     return {
+        "HarvestedArticle": "article",
         "HarvestedPreprint": "preprint",
-        "HarvestedBooks": "book",
+        "HarvestedBook": "book",
         "HarvestedSciELOData": "scielo_data",
     }.get(instance.__class__.__name__)
 
 
-def index_harvested_raw_data(model, index_name=None, only_success=True, refresh=False):
+def index_harvested_raw_data(
+    model,
+    index_name=None,
+    only_success=True,
+    page_size=DEFAULT_TRANSFORM_PAGE_SIZE,
+):
     """
-    Indexa o raw_data dos modelos HarvestedPreprint, HarvestedBooks e
-    HarvestedSciELOData no OpenSearch.
+    Indexa o raw_data dos modelos Harvested* no OpenSearch e transforma
+    raw → bronze por páginas de identifiers.
     """
-    status_filter = [HarvestStatus.SUCCESS]
-    if not only_success:
-        status_filter = None
-
     queryset = model.objects.all()
-    if status_filter:
-        queryset = queryset.filter(harvest_status__in=status_filter)
+    if only_success:
+        queryset = queryset.filter(harvest_status=HarvestStatus.SUCCESS)
 
     queryset = queryset.exclude(index_status=IndexStatus.SUCCESS)
 
-    for obj in queryset.iterator():
-        index_name = get_index_name(model_name=model.__name__, instance=obj)
-        index_harvested_instance(instance=obj, index_name=index_name, refresh=False)
+    page_ids_by_type = defaultdict(list)
+    model_name = model.__name__
 
-        if obj.index_status == IndexStatus.SUCCESS and obj.raw_data:
-            try:
-                transform_after_indexing(instance=obj, model_name=model.__name__)
-            except Exception as exc:
-                logger.warning(
-                    "Falha na transformação bronze %s (%s): %s",
-                    model.__name__,
-                    obj.identifier,
-                    exc,
-                )
+    for obj in queryset.iterator():
+        resolved_index = index_name or get_index_name(
+            model_name=model_name, instance=obj
+        )
+        indexed = index_harvested_instance(
+            instance=obj,
+            index_name=resolved_index,
+        )
+        if not indexed:
+            continue
+
+        type_data = getattr(obj, "type_data", None)
+        page_ids_by_type[type_data].append(obj.identifier)
+        if len(page_ids_by_type[type_data]) >= page_size:
+            transform_indexed_page(
+                model_name,
+                page_ids_by_type[type_data],
+                type_data=type_data,
+            )
+            page_ids_by_type[type_data] = []
+
+    _transform_batches_by_type(model_name, page_ids_by_type)
 
 
 def index_harvested_instance(instance, index_name=None, refresh=False):
     """
     Indexa um único objeto harvest no OpenSearch.
+
+    Returns:
+        bool: True se a indexação foi bem-sucedida.
     """
     exc_context = ExceptionContext(
         harvest_object=instance,
@@ -94,13 +112,13 @@ def index_harvested_instance(instance, index_name=None, refresh=False):
     client = get_opensearch_client()
     if client is None:
         logger.warning("OpenSearch client não configurado.")
-        return
-    
+        return False
+
     if not index_name:
         logger.warning(
             f"Index name não configurado para {instance.__class__.__name__} ({instance.identifier})."
         )
-        return
+        return False
 
     try:
         payload_hash = source_hash(instance.raw_data)
@@ -118,6 +136,7 @@ def index_harvested_instance(instance, index_name=None, refresh=False):
             refresh=False,
         )
         instance.mark_as_indexed(index_name=index_name)
+        success = True
 
     except Exception as exc:
         logger.warning(
@@ -126,9 +145,12 @@ def index_harvested_instance(instance, index_name=None, refresh=False):
         instance.mark_as_index_failed()
         exc_context.add_exception(exception=exc, field_name="raw_data")
         exc_context.save_to_db()
+        success = False
 
-    if refresh:
+    if refresh and success:
         client.indices.refresh(index=index_name)
+
+    return success
 
 
 def delete_harvested_document(model_name, identifier, refresh=False):

@@ -1,5 +1,6 @@
 import io
 import tempfile
+from datetime import datetime
 from unittest.mock import patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -14,25 +15,46 @@ from harvest.language_normalizer import (
 )
 
 from .exception_logs import ExceptionContext
-from .harvests.harvest_data import harvest_data
-from .harvests.harvest_preprint import NODES, harvest_preprint
-from .models import (
-    GlobalMetricsUploadFile,
-    HarvestedBooks,
-    HarvestedPreprint,
-    HarvestedSciELOData,
-    HarvestErrorLogBooks,
-    HarvestErrorLogPreprint,
-    HarvestErrorLogSciELOData,
-)
 from .global_metrics.constants import GLOBAL_METRICS_REQUIRED_COLUMNS
-from .global_metrics.indexing import GlobalMetricsIndexingError, index_prepared_rows, iter_file_rows
+from .global_metrics.indexing import (
+    GlobalMetricsIndexingError,
+    index_prepared_rows,
+    iter_file_rows,
+)
 from .global_metrics.opensearch import (
     build_global_metrics_update_by_query_body,
     build_harvest_metric_lookup_body,
     iter_silver_issn_year_groups,
 )
 from .global_metrics.parsing import global_metric_row_from_hit
+from .harvests.harvest_articles import (
+    fetch_article_identifiers_page,
+    harvest_articles,
+)
+from .harvests.harvest_data import harvest_data
+from .harvests.harvest_preprint import NODES, harvest_preprint
+from .bronze_transform import (
+    _build_reindex_body,
+    _refresh_source_for_page,
+    _reindex_page,
+    transform_documents_batch,
+    transform_documents_page,
+    transform_indexed_page,
+)
+from .indexing import get_index_name
+from .models import (
+    GlobalMetricsUploadFile,
+    HarvestedArticle,
+    HarvestedBook,
+    HarvestedPreprint,
+    HarvestedSciELOData,
+    HarvestErrorLogArticle,
+    HarvestErrorLogBook,
+    HarvestErrorLogPreprint,
+    HarvestErrorLogSciELOData,
+    HarvestModelChoice,
+    TransformationScript,
+)
 from .parse_info_oai_pmh import (
     get_date,
     get_identifier_source,
@@ -61,7 +83,8 @@ class GlobalMetricsUploadFileTests(TestCase):
                 )
                 first = GlobalMetricsUploadFile(creator=self.user)
                 first.file = first_file
-                first.save()
+                with self.captureOnCommitCallbacks(execute=True):
+                    first.save()
 
                 second_file = SimpleUploadedFile(
                     "metrics.xlsx",
@@ -70,7 +93,8 @@ class GlobalMetricsUploadFileTests(TestCase):
                 )
                 second = GlobalMetricsUploadFile(creator=self.user)
                 second.file = second_file
-                second.save()
+                with self.captureOnCommitCallbacks(execute=True):
+                    second.save()
 
                 self.assertEqual(GlobalMetricsUploadFile.objects.count(), 1)
                 self.assertEqual(first.pk, second.pk)
@@ -467,13 +491,13 @@ class HarvestTestOAIPMH(TestCase):
         )
 
     def test_exception_context_saves_book_log(self):
-        book = HarvestedBooks.objects.create(
+        book = HarvestedBook.objects.create(
             identifier="oai:scielo:book:1",
             creator=self.user,
         )
         exc_context = ExceptionContext(
             harvest_object=book,
-            log_model=HarvestErrorLogBooks,
+            log_model=HarvestErrorLogBook,
             fk_field="book",
         )
         exc_context.add_exception(
@@ -482,8 +506,8 @@ class HarvestTestOAIPMH(TestCase):
         )
         exc_context.save_to_db()
         exc_context.verify_obj_as_failed()
-        self.assertEqual(HarvestErrorLogBooks.objects.count(), 1)
-        log = HarvestErrorLogBooks.objects.first()
+        self.assertEqual(HarvestErrorLogBook.objects.count(), 1)
+        log = HarvestErrorLogBook.objects.first()
         self.assertEqual(log.book, book)
         self.assertEqual(log.field_name, "identifier")
         self.assertEqual(log.exception_type, "KeyError")
@@ -518,42 +542,206 @@ class HarvestTestOAIPMH(TestCase):
         self.assertEqual(data.harvest_error_log.count(), 1)
         self.assertEqual(data.harvest_error_log.first().exception_type, "RuntimeError")
 
-    @patch("harvest.harvests.harvest_data.fetch_dataset_data")
+
+class HarvestArticlesTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create(username="article-user", password="teste")
+        self.identifier_item = {
+            "code": "S0100-879X1998000800011",
+            "collection": "scl",
+            "doi": "10.1590/S0100-879X1998000800011",
+            "processing_date": "1998-09-21",
+        }
+        self.article_payload = {
+            "code": "S0100-879X1998000800011",
+            "doi": "10.1590/S0100-879X1998000800011",
+            "collection": "scl",
+            "processing_date": "1998-09-21",
+            "publication_year": "1998",
+            "publication_date": "1998-08",
+            "title": {
+                "v100": [{"_": "Brazilian Journal of Medical and Biological Research"}],
+                "v310": [{"_": "BR"}],
+                "issns": ["1414-431X", "0100-879X"],
+            },
+            "article": {
+                "v12": [{"l": "en", "_": "High dietary calcium decreases blood pressure"}],
+                "v83": [{"l": "en", "a": "This study evaluates calcium."}],
+                "v40": [{"_": "en"}],
+                "v10": [{"n": "N.", "s": "Buassi", "_": ""}],
+                "v31": [{"_": "31"}],
+                "v32": [{"_": "8"}],
+                "v14": [{"f": "1099", "_": ""}, {"l": "1101", "_": ""}],
+                "v880": [{"_": "S0100-879X1998000800011"}],
+                "v978": [{"l": "en", "k": "calcium carbonate", "_": ""}],
+            },
+        }
+
+    @patch("harvest.harvests.harvest_articles.fetch_data")
+    def test_fetch_article_identifiers_page_uses_incremental_params(self, mock_fetch_data):
+        mock_fetch_data.return_value = {
+            "objects": [self.identifier_item],
+            "meta": {"offset": 10},
+        }
+
+        objects, meta = fetch_article_identifiers_page(
+            limit=10,
+            offset=20,
+            from_date="2024-01-01",
+            until_date="2024-01-31",
+            collection="scl",
+        )
+
+        self.assertEqual(objects, [self.identifier_item])
+        self.assertEqual(meta["offset"], 10)
+        url = mock_fetch_data.call_args.args[0]
+        self.assertIn("limit=10", url)
+        self.assertIn("offset=20", url)
+        self.assertIn("from=2024-01-01", url)
+        self.assertIn("until=2024-01-31", url)
+        self.assertIn("collection=scl", url)
+
+    @patch("harvest.harvests.harvest_articles.transform_indexed_page")
+    @patch("harvest.signals.index_harvested_instance")
+    @patch("harvest.harvests.harvest_articles.fetch_article_detail")
+    @patch("harvest.harvests.harvest_articles.fetch_article_identifiers_page")
+    def test_harvest_articles_paginates_and_persists_success(
+        self,
+        mock_fetch_page,
+        mock_fetch_detail,
+        mock_index,
+        mock_transform_page,
+    ):
+        mock_fetch_page.side_effect = [
+            ([self.identifier_item], {}),
+            ([], {}),
+        ]
+        mock_fetch_detail.return_value = self.article_payload
+
+        def mark_indexed(instance, index_name=None, refresh=False):
+            instance.index_status = "success"
+            return True
+
+        mock_index.side_effect = mark_indexed
+        mock_transform_page.return_value = {"status": "success"}
+
+        harvest_articles(user=self.user, limit=1, offset=0, from_date="1998-09-21")
+
+        self.assertEqual(mock_fetch_page.call_count, 2)
+        self.assertEqual(HarvestedArticle.objects.count(), 1)
+        article = HarvestedArticle.objects.get(identifier="S0100-879X1998000800011")
+        self.assertEqual(article.creator, self.user)
+        self.assertEqual(article.harvest_status, "success")
+        self.assertEqual(article.raw_data, self.article_payload)
+        self.assertEqual(article.datestamp.date().isoformat(), "1998-09-21")
+        mock_index.assert_called()
+        mock_transform_page.assert_called_once_with(
+            "HarvestedArticle",
+            ["S0100-879X1998000800011"],
+        )
+
+    @patch("harvest.harvests.harvest_articles.transform_indexed_page")
+    @patch("harvest.signals.index_harvested_instance")
+    @patch("harvest.harvests.harvest_articles.fetch_article_detail")
+    @patch("harvest.harvests.harvest_articles.fetch_article_identifiers_page")
+    def test_harvest_articles_records_failed_article(
+        self,
+        mock_fetch_page,
+        mock_fetch_detail,
+        mock_index,
+        mock_transform_page,
+    ):
+        mock_fetch_page.side_effect = [
+            ([self.identifier_item], {}),
+            ([], {}),
+        ]
+        mock_fetch_detail.return_value = {}
+
+        harvest_articles(user=self.user, limit=1)
+
+        article = HarvestedArticle.objects.get(identifier="S0100-879X1998000800011")
+        self.assertEqual(article.harvest_status, "failed")
+        self.assertEqual(HarvestErrorLogArticle.objects.count(), 1)
+        self.assertEqual(article.harvest_error_log.first().field_name, "raw_data")
+        mock_transform_page.assert_not_called()
+
+    @patch("harvest.tasks.harvest_articles")
+    def test_harvest_scielo_articles_uses_latest_datestamp_incrementally(self, mock_harvest_articles):
+        HarvestedArticle.objects.create(
+            identifier="S0100-879X1998000800011",
+            creator=self.user,
+            datestamp=timezone.make_aware(datetime(2024, 5, 2)),
+        )
+
+        from .tasks import harvest_scielo_articles
+
+        harvest_scielo_articles(username=self.user.username, limit=10, offset=0)
+
+        self.assertEqual(mock_harvest_articles.call_args.kwargs["from_date"], "2024-05-02")
+        self.assertEqual(mock_harvest_articles.call_args.kwargs["limit"], 10)
+
+
+class HarvestArticleIndexingTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create(username="indexing-user", password="teste")
+
+    @override_settings(OS_INDEX_RAW_ARTICLE="raw_scielo_article_test")
+    def test_get_index_name_supports_harvested_article(self):
+        self.assertEqual(
+            get_index_name(model_name="HarvestedArticle"),
+            "raw_scielo_article_test",
+        )
+
+    @patch("harvest.harvests.harvest_data._transform_batches_by_type")
+    @patch("harvest.signals.index_harvested_instance")
+    @patch("harvest.harvests.harvest_data.fetch_dataverse_data")
     @patch("harvest.harvests.harvest_data.fetch_search_page")
     def test_harvest_data_paginates_using_total_count(
-        self, mock_fetch_search, mock_fetch_dataset
+        self, mock_fetch_search, mock_fetch_dataverse, mock_index, mock_transform_batches
     ):
-        dataverse_item = {
+        first_dataverse_item = {
             "type": "dataverse",
             "identifier": "dv-1",
             "name": "Dataverse Test",
         }
-        dataset_item = {
-            "type": "dataset",
-            "global_id": "doi:10.5072/FK2/TEST",
-        }
-        dataset_data = {
-            "identifier": "ds-1",
-            "title": "Dataset Test",
+        second_dataverse_item = {
+            "type": "dataverse",
+            "identifier": "dv-2",
+            "name": "Dataverse Test 2",
         }
         mock_fetch_search.side_effect = [
-            ([dataverse_item, dataset_item], 2),
+            ([first_dataverse_item, second_dataverse_item], 2),
             ([], 2),
         ]
-        mock_fetch_dataset.return_value = dataset_data
+        mock_fetch_dataverse.side_effect = [
+            {"identifier": "dv-1"},
+            {"identifier": "dv-2"},
+        ]
+
+        def mark_indexed(instance, index_name=None, refresh=False):
+            instance.index_status = "success"
+            return True
+
+        mock_index.side_effect = mark_indexed
 
         harvest_data(
             user=self.user,
-            base_url="https://data.scielo.org",
+            type="dataverse",
             per_page=2,
             start=0,
         )
 
         self.assertEqual(HarvestedSciELOData.objects.count(), 2)
         dataverse_obj = HarvestedSciELOData.objects.get(identifier="dv-1")
-        dataset_obj = HarvestedSciELOData.objects.get(identifier="ds-1")
+        second_dataverse_obj = HarvestedSciELOData.objects.get(identifier="dv-2")
         self.assertEqual(dataverse_obj.raw_data["identifier"], "dv-1")
-        self.assertEqual(dataset_obj.raw_data["identifier"], "ds-1")
+        self.assertEqual(second_dataverse_obj.raw_data["identifier"], "dv-2")
+        mock_transform_batches.assert_called_once()
+        self.assertEqual(mock_transform_batches.call_args.args[0], "HarvestedSciELOData")
+        self.assertEqual(
+            mock_transform_batches.call_args.args[1]["dataverse"],
+            ["dv-1", "dv-2"],
+        )
 
 
 class LanguageNormalizerTests(SimpleTestCase):
@@ -588,3 +776,327 @@ class LanguageNormalizerTests(SimpleTestCase):
     def test_list_input_deduplicates_preserving_order(self):
         languages = ["English", "ENG", "Portuguese", "pt", "Castilian", "Spanish", "EN-US", "Spanish Sign Language", "Spanish, Castilian", "DUTCH"]
         self.assertEqual(normalize_language_field(languages), ["en", "pt", "es", "nl"])
+
+
+class ArticleBronzeTransformTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create(username="bronze-article-user", password="teste")
+        self.identifier = "S0100-879X1998000800011"
+        self.source_index = "raw_scielo_article_test"
+        self.dest_index = "bronze_scielo_articles_test"
+        self.transform_script = "ctx._source = ctx._source.raw_data;"
+
+        with patch("harvest.signals.index_harvested_instance"):
+            self.article = HarvestedArticle.objects.create(
+                identifier=self.identifier,
+                creator=self.user,
+                harvest_status="success",
+                index_status="success",
+                raw_data={
+                    "code": self.identifier,
+                    "processing_date": "1998-09-21",
+                    "article": {"v12": [{"l": "en", "_": "Title"}]},
+                },
+            )
+
+        self.script = TransformationScript.objects.create(
+            name="ArticleMeta raw para bronze",
+            source_index=self.source_index,
+            dest_index=self.dest_index,
+            transform_script=self.transform_script,
+            harvest_model=HarvestModelChoice.ARTICLE,
+            is_active=True,
+            creator=self.user,
+        )
+
+    def test_build_reindex_body_uses_ids_query_for_identifier(self):
+        body = _build_reindex_body(
+            source_index=self.source_index,
+            dest_index=self.dest_index,
+            transform_script=self.transform_script,
+            identifiers=[self.identifier],
+        )
+
+        self.assertEqual(body["source"]["index"], self.source_index)
+        self.assertEqual(body["dest"]["index"], self.dest_index)
+        self.assertEqual(body["script"]["source"], self.transform_script)
+        self.assertEqual(
+            body["source"]["query"],
+            {"ids": {"values": [self.identifier]}},
+        )
+
+    def test_build_reindex_body_uses_ids_query_for_identifiers_page(self):
+        identifiers = [self.identifier, "S0100-879X1998000800012"]
+        body = _build_reindex_body(
+            source_index=self.source_index,
+            dest_index=self.dest_index,
+            transform_script=self.transform_script,
+            identifiers=identifiers,
+        )
+
+        self.assertEqual(
+            body["source"]["query"],
+            {"ids": {"values": identifiers}},
+        )
+
+    def test_build_reindex_body_has_no_query_by_default(self):
+        body = _build_reindex_body(
+            source_index=self.source_index,
+            dest_index=self.dest_index,
+            transform_script=self.transform_script,
+        )
+
+        self.assertEqual(body["source"]["index"], self.source_index)
+        self.assertEqual(body["dest"]["index"], self.dest_index)
+        self.assertNotIn("query", body["source"])
+
+    def test_transform_documents_page_skips_empty_identifiers(self):
+        result = transform_documents_page(self.script, [])
+
+        self.assertEqual(result["status"], "skip")
+        self.assertIn("Nenhum identifier", result["error"])
+
+    @patch("harvest.bronze_transform._enqueue_transformed_bronze")
+    @patch("harvest.bronze_transform.client")
+    def test_transform_documents_page_refreshes_once_and_reindexes_ids(
+        self,
+        mock_client,
+        mock_enqueue,
+    ):
+        identifiers = [self.identifier, "S0100-879X1998000800012"]
+        mock_client.indices.exists.return_value = True
+        mock_client.reindex.return_value = {
+            "total": 2,
+            "created": 2,
+            "updated": 0,
+        }
+        mock_enqueue.return_value = True
+
+        result = transform_documents_page(self.script, identifiers)
+
+        mock_client.indices.refresh.assert_called_once_with(index=self.source_index)
+        mock_client.reindex.assert_called_once()
+        self.assertNotIn("refresh", mock_client.reindex.call_args.kwargs)
+        body = mock_client.reindex.call_args.kwargs["body"]
+        self.assertEqual(
+            body["source"]["query"],
+            {"ids": {"values": identifiers}},
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(result["enqueued"], 2)
+        self.assertEqual(mock_enqueue.call_count, 2)
+
+    @patch("harvest.bronze_transform._enqueue_transformed_bronze")
+    @patch("harvest.bronze_transform.client")
+    def test_transform_documents_page_errors_when_total_is_zero(
+        self,
+        mock_client,
+        mock_enqueue,
+    ):
+        mock_client.indices.exists.return_value = True
+        mock_client.reindex.return_value = {
+            "total": 0,
+            "created": 0,
+            "updated": 0,
+        }
+
+        result = transform_documents_page(self.script, [self.identifier])
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Nenhum documento encontrado", result["error"])
+        mock_enqueue.assert_not_called()
+
+    @patch("harvest.bronze_transform._enqueue_transformed_bronze")
+    @patch("harvest.bronze_transform.client")
+    def test_transform_documents_page_reindexes_single_id_and_enqueues_silver(
+        self,
+        mock_client,
+        mock_enqueue,
+    ):
+        mock_client.indices.exists.return_value = True
+        mock_client.reindex.return_value = {
+            "total": 1,
+            "created": 1,
+            "updated": 0,
+        }
+        mock_enqueue.return_value = True
+
+        result = transform_documents_page(self.script, [self.identifier])
+
+        mock_client.indices.refresh.assert_called_once_with(index=self.source_index)
+        mock_client.reindex.assert_called_once()
+        self.assertNotIn("refresh", mock_client.reindex.call_args.kwargs)
+        body = mock_client.reindex.call_args.kwargs["body"]
+        self.assertEqual(body["source"]["index"], self.source_index)
+        self.assertEqual(body["dest"]["index"], self.dest_index)
+        self.assertEqual(
+            body["source"]["query"],
+            {"ids": {"values": [self.identifier]}},
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(result["index"], self.source_index)
+        self.assertEqual(result["dest"], self.dest_index)
+        self.assertIsNone(result["error"])
+        mock_enqueue.assert_called_once_with(self.dest_index, self.identifier)
+
+    @patch("harvest.bronze_transform.client")
+    def test_transform_documents_batch_reindexes_without_ids_query(self, mock_client):
+        mock_client.indices.exists.return_value = True
+        mock_client.reindex.return_value = {
+            "total": 2,
+            "created": 2,
+            "updated": 0,
+        }
+
+        result = transform_documents_batch(self.script)
+
+        mock_client.reindex.assert_called_once()
+        self.assertNotIn("refresh", mock_client.reindex.call_args.kwargs)
+        mock_client.indices.refresh.assert_not_called()
+        body = mock_client.reindex.call_args.kwargs["body"]
+        self.assertEqual(body["source"]["index"], self.source_index)
+        self.assertEqual(body["dest"]["index"], self.dest_index)
+        self.assertNotIn("query", body["source"])
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(result["created"], 2)
+        self.assertEqual(result["index"], self.source_index)
+        self.assertEqual(result["dest"], self.dest_index)
+
+    @patch("harvest.bronze_transform.transform_documents_page")
+    def test_transform_indexed_page_uses_article_script(self, mock_transform_page):
+        mock_transform_page.return_value = {"status": "success"}
+
+        result = transform_indexed_page(
+            "HarvestedArticle",
+            [self.identifier],
+        )
+
+        mock_transform_page.assert_called_once_with(self.script, [self.identifier])
+        self.assertEqual(result["status"], "success")
+
+    def test_transform_indexed_page_returns_none_without_script(self):
+        self.script.is_active = False
+        self.script.save(update_fields=["is_active"])
+
+        result = transform_indexed_page("HarvestedArticle", [self.identifier])
+
+        self.assertIsNone(result)
+
+    def test_transform_indexed_page_returns_none_for_empty_identifiers(self):
+        self.assertIsNone(transform_indexed_page("HarvestedArticle", []))
+
+    @patch("harvest.bronze_transform.transform_documents_page")
+    def test_transform_indexed_page_logs_error_on_failure(self, mock_transform_page):
+        mock_transform_page.return_value = {
+            "status": "error",
+            "error": "boom",
+        }
+
+        with self.assertLogs("harvest.bronze_transform", level="ERROR") as logs:
+            result = transform_indexed_page("HarvestedArticle", [self.identifier])
+
+        self.assertEqual(result["status"], "error")
+        self.assertTrue(any("boom" in line for line in logs.output))
+
+    @patch("harvest.bronze_transform.client")
+    def test_refresh_source_for_page_returns_error_on_failure(self, mock_client):
+        mock_client.indices.refresh.side_effect = RuntimeError("refresh failed")
+
+        result = _refresh_source_for_page(self.script, [self.identifier])
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("refresh", result["error"].lower())
+
+    @patch("harvest.bronze_transform.client")
+    def test_refresh_source_for_page_returns_none_on_success(self, mock_client):
+        result = _refresh_source_for_page(self.script, [self.identifier])
+
+        mock_client.indices.refresh.assert_called_once_with(index=self.source_index)
+        self.assertIsNone(result)
+
+    @patch("harvest.bronze_transform.client")
+    def test_reindex_page_errors_when_total_is_zero(self, mock_client):
+        mock_client.indices.exists.return_value = True
+        mock_client.reindex.return_value = {
+            "total": 0,
+            "created": 0,
+            "updated": 0,
+        }
+
+        result = _reindex_page(self.script, [self.identifier])
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Nenhum documento encontrado", result["error"])
+
+    @patch("harvest.bronze_transform.transform_indexed_page")
+    def test_reconcile_missing_bronze_etl_transforms_in_pages(self, mock_transform_page):
+        from .bronze_transform import reconcile_missing_bronze_etl
+
+        mock_transform_page.return_value = {"status": "success"}
+        with patch("harvest.signals.index_harvested_instance"):
+            HarvestedArticle.objects.create(
+                identifier="S0100-879X1998000800012",
+                creator=self.user,
+                harvest_status="success",
+                index_status="success",
+                raw_data={"code": "S0100-879X1998000800012"},
+            )
+            HarvestedArticle.objects.create(
+                identifier="S0100-879X1998000800013",
+                creator=self.user,
+                harvest_status="success",
+                index_status="success",
+                raw_data={"code": "S0100-879X1998000800013"},
+            )
+
+        reconcile_missing_bronze_etl(HarvestedArticle, page_size=2)
+
+        self.assertEqual(mock_transform_page.call_count, 2)
+        all_ids = []
+        for call in mock_transform_page.call_args_list:
+            self.assertEqual(call.args[0], "HarvestedArticle")
+            self.assertLessEqual(len(call.args[1]), 2)
+            all_ids.extend(call.args[1])
+        self.assertCountEqual(
+            all_ids,
+            [
+                self.identifier,
+                "S0100-879X1998000800012",
+                "S0100-879X1998000800013",
+            ],
+        )
+
+    @patch("harvest.bronze_transform.transform_indexed_page")
+    def test_reconcile_missing_bronze_etl_exits_when_empty(self, mock_transform_page):
+        from .bronze_transform import reconcile_missing_bronze_etl
+        from etl.models import EtlItemProcess
+
+        EtlItemProcess.objects.create(
+            source_index=self.dest_index,
+            external_id=self.identifier,
+            document_type="article",
+        )
+
+        reconcile_missing_bronze_etl(HarvestedArticle, page_size=2)
+
+        mock_transform_page.assert_not_called()
+
+    @patch("harvest.bronze_transform.transform_indexed_page")
+    @patch("harvest.signals.index_harvested_instance", return_value=True)
+    def test_signal_indexes_raw_without_transform(
+        self,
+        mock_index,
+        mock_transform_page,
+    ):
+        HarvestedArticle.objects.create(
+            identifier="S0100-879X1998000800099",
+            creator=self.user,
+            harvest_status="success",
+            raw_data={"code": "S0100-879X1998000800099"},
+        )
+
+        mock_index.assert_called()
+        mock_transform_page.assert_not_called()

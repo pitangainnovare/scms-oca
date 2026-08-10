@@ -1,69 +1,71 @@
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from harvest.indexing import index_harvested_raw_data
-from harvest.models import HarvestedBooks, HarvestedPreprint, HarvestedSciELOData
 from search_gateway.client import get_opensearch_client
+
+RAW_INDEX_BODY = {
+    "settings": {
+        "number_of_shards": 1,
+        "number_of_replicas": 0,
+    },
+    "mappings": {
+        "properties": {
+            "oca_indexed_at": {"type": "date"},
+            "oca_source_hash": {"type": "text"},
+            "raw_data": {"type": "object", "enabled": False},
+        }
+    },
+}
+
+RAW_INDICES = {
+    "article": ("HarvestedArticle", "OS_INDEX_RAW_ARTICLE"),
+    "preprint": ("HarvestedPreprint", "OS_INDEX_RAW_PREPRINT"),
+    "books": ("HarvestedBook", "OS_INDEX_RAW_BOOK"),
+    "dataset": ("HarvestedSciELOData(dataset)", "OS_INDEX_RAW_SCIELO_DATA_DATASET"),
+    "dataverse": (
+        "HarvestedSciELOData(dataverse)",
+        "OS_INDEX_RAW_SCIELO_DATA_DATAVERSE",
+    ),
+}
 
 
 class Command(BaseCommand):
-    help = "Cria os índices raw no OpenSearch para preprint, books e scielo data."
+    help = (
+        "Cria os índices raw no OpenSearch (article, preprint, books, scielo data). "
+        "Use --index article para criar só o índice de artigos."
+    )
 
     def add_arguments(self, parser):
+        parser.add_argument(
+            "--index",
+            choices=list(RAW_INDICES.keys()),
+            help="Cria o índice raw para o tipo escolhido. Padrão: todos.",
+        )
         parser.add_argument(
             "--force",
             action="store_true",
             help="Se o índice já existir, remove e recria.",
         )
-        parser.add_argument(
-            "--index",
-            choices=["preprint", "books", "data", "all"],
-            default=None,
-            help="Indexa itens raw para o tipo escolhido.",
-        )
-
-    def _index_items(self, index_choice):
-        model_map = {
-            "preprint": HarvestedPreprint,
-            "books": HarvestedBooks,
-            "data": HarvestedSciELOData,
-        }
-        if index_choice == "all":
-            models_to_index = list(model_map.values())
-        else:
-            models_to_index = [model_map[index_choice]]
-
-        for model in models_to_index:
-            self.stdout.write(
-                self.style.NOTICE(f"Indexando itens para {model.__name__}...")
-            )
-            index_harvested_raw_data(model=model, refresh=False)
 
     def handle(self, *args, **options):
         client = get_opensearch_client()
         if client is None:
             raise CommandError("OpenSearch client não configurado.")
 
-        indices = {
-            "HarvestedPreprint": getattr(
-                settings, "OS_INDEX_RAW_PREPRINT", None
-            ),
-            "HarvestedBooks": getattr(settings, "OS_INDEX_RAW_BOOK", None),
-            "HarvestedSciELOData(dataset)": getattr(
-                settings, "OS_INDEX_RAW_SCIELO_DATA_DATASET", None
-            ),
-            "HarvestedSciELOData(dataverse)": getattr(
-                settings, "OS_INDEX_RAW_SCIELO_DATA_DATAVERSE", None
-            ),
-        }
-        force = options["force"]
         index_choice = options["index"]
+        selected = (
+            {index_choice: RAW_INDICES[index_choice]}
+            if index_choice
+            else RAW_INDICES
+        )
+        force = options["force"]
 
-        for model_name, index_name in indices.items():
+        for key, (model_name, setting_name) in selected.items():
+            index_name = getattr(settings, setting_name, None)
             if not index_name:
                 self.stdout.write(
                     self.style.WARNING(
-                        f"{model_name}: índice não configurado, pulando."
+                        f"{model_name}: índice não configurado ({setting_name}), pulando."
                     )
                 )
                 continue
@@ -82,21 +84,7 @@ class Command(BaseCommand):
                 )
                 continue
 
-            client.indices.create(
-                index=index_name,
-                body={
-                    "settings": {
-                        "number_of_shards": 1,
-                        "number_of_replicas": 0,
-                    },
-                    "mappings": {
-                        "properties": {"raw_data": {"type": "object", "enabled": False}}
-                    },
-                },
-            )
+            client.indices.create(index=index_name, body=RAW_INDEX_BODY)
             self.stdout.write(
                 self.style.SUCCESS(f"{model_name}: índice criado: {index_name}.")
             )
-
-        if index_choice:
-            self._index_items(index_choice=index_choice)

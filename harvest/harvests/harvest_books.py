@@ -6,9 +6,10 @@ from django.db.models import Max
 from django.utils import timezone
 
 from core.utils.utils import fetch_data
+from harvest.bronze_transform import transform_indexed_page
 from harvest.exception_logs import ExceptionContext
 from harvest.indexing import delete_harvested_document
-from harvest.models import HarvestedBooks, HarvestErrorLogBooks
+from harvest.models import HarvestedBook, HarvestErrorLogBook
 
 
 def _build_url(base_url, params=None):
@@ -38,13 +39,13 @@ def fetch_doc(base_url, db_name, doc_id, headers, user):
             url,
         )
     except Exception as exc:
-        harvested_obj, _ = HarvestedBooks.objects.get_or_create(
+        harvested_obj, _ = HarvestedBook.objects.get_or_create(
             identifier=doc_id,
             creator=user,
         )
         exc_context = ExceptionContext(
             harvest_object=harvested_obj,
-            log_model=HarvestErrorLogBooks,
+            log_model=HarvestErrorLogBook,
             fk_field="book",
         )
         exc_context.add_exception(
@@ -87,7 +88,7 @@ def _extract_last_seq(payload):
     return None
 
 
-def _persist_harvested_books(
+def _persist_harvested_book(
     user,
     source_url,
     identifier,
@@ -96,14 +97,14 @@ def _persist_harvested_books(
     parent=None,
     last_seq=None,
 ):
-    harvested_obj, _ = HarvestedBooks.objects.get_or_create(
+    harvested_obj, _ = HarvestedBook.objects.get_or_create(
         identifier=identifier,
         creator=user,
     )
     harvested_obj.mark_as_in_progress()
     exc_context = ExceptionContext(
         harvest_object=harvested_obj,
-        log_model=HarvestErrorLogBooks,
+        log_model=HarvestErrorLogBook,
         fk_field="book",
     )
     try:
@@ -132,6 +133,7 @@ def _persist_harvested_books(
         )
     exc_context.save_to_db()
     exc_context.mark_status_harvest()
+    return harvested_obj
 
 
 def _base_url():
@@ -140,17 +142,17 @@ def _base_url():
 
 def _get_last_seq():
     return (
-        HarvestedBooks.objects.exclude(last_seq__isnull=True)
+        HarvestedBook.objects.exclude(last_seq__isnull=True)
         .aggregate(max_seq=Max("last_seq"))
         .get("max_seq")
     )
 
 
 def _delete_book_record(identifier):
-    obj = HarvestedBooks.objects.filter(identifier=identifier).first()
+    obj = HarvestedBook.objects.filter(identifier=identifier).first()
     if obj:
         obj.delete()
-        delete_harvested_document(model_name="HarvestedBooks", identifier=identifier)
+        delete_harvested_document(model_name="HarvestedBook", identifier=identifier)
     return None
 
 
@@ -161,7 +163,7 @@ def _resolve_monograph_parent(
     headers,
     user,
 ):
-    parent = HarvestedBooks.objects.filter(identifier=monograph_identifier).first()
+    parent = HarvestedBook.objects.filter(identifier=monograph_identifier).first()
     if parent:
         return parent
 
@@ -177,14 +179,14 @@ def _resolve_monograph_parent(
 
     identifier = monograph_payload.get("_id")
     monograph_payload = _sanitize_raw_data(monograph_payload)
-    _persist_harvested_books(
+    _persist_harvested_book(
         user=user,
         source_url=monograph_url,
         identifier=identifier,
         raw_data=monograph_payload,
         type_data=monograph_payload.get("TYPE"),
     )
-    return HarvestedBooks.objects.filter(identifier=identifier).first()
+    return HarvestedBook.objects.filter(identifier=identifier).first()
 
 
 def _include_data_monograph_in_payload_type_part(payload, monograph):
@@ -242,19 +244,28 @@ def harvest_books(
     since=None,
     headers=None,
 ):
+    page_ids = []
     for change in iter_changes(
         db_name=db_name,
         since=since,
         limit=limit,
         headers=headers,
     ):
-        harvest_single_book(
+        harvested_obj = harvest_single_book(
             base_url=_base_url(),
             db_name=db_name,
             payload=change,
             headers=headers,
             user=user,
         )
+        if harvested_obj and harvested_obj.is_indexed():
+            page_ids.append(harvested_obj.identifier)
+        if len(page_ids) >= limit:
+            transform_indexed_page("HarvestedBook", page_ids)
+            page_ids = []
+
+    if page_ids:
+        transform_indexed_page("HarvestedBook", page_ids)
 
 
 def harvest_single_book(
@@ -268,10 +279,10 @@ def harvest_single_book(
     doc_id = payload.get("id")
     last_seq = payload.get("seq")
     if not doc_id:
-        return
+        return None
     if payload.get("deleted"):
         _delete_book_record(identifier=doc_id)
-        return
+        return None
     base_url = _base_url() if not base_url else base_url
     if not base_url:
         logging.error("Sem base url definida para coleta de books")
@@ -306,7 +317,7 @@ def harvest_single_book(
                 payload=payload, monograph=parent
             )
 
-    _persist_harvested_books(
+    return _persist_harvested_book(
         user=user,
         source_url=doc_url,
         identifier=identifier,

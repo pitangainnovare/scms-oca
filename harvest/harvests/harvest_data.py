@@ -4,11 +4,14 @@ from urllib.parse import urlencode
 from django.conf import settings
 from django.utils import timezone
 
+from collections import defaultdict
+
 from core.utils.utils import fetch_data
+from harvest.bronze_transform import _transform_batches_by_type
 from harvest.exception_logs import ExceptionContext
 from harvest.models import HarvestedSciELOData, HarvestErrorLogSciELOData
 
-DEFAULT_HEADERS = {"Accept": "text/xml; charset=utf-8", "user-agent": settings.USER_AGENT}
+DEFAULT_HEADERS = {"Accept": "application/json", "user-agent": settings.USER_AGENT}
 
 API_SCIELO_DATA = settings.SITE_SCIELO_DATA + "/api/search"
 DATASET_URL = settings.SITE_SCIELO_DATA + "/api/datasets/:persistentId/"
@@ -94,6 +97,7 @@ def _persist_harvested(user, source_url, identifier, raw_data, type_data):
         )
     exc_context.save_to_db()
     exc_context.mark_status_harvest()
+    return harvested_obj
 
 
 def harvest_data(user, type, per_page=100, start=0):
@@ -118,14 +122,21 @@ def harvest_data(user, type, per_page=100, start=0):
             logging.info("Nenhum item retornado. Finalizando coleta.")
             break
 
+        page_ids_by_type = defaultdict(list)
         for item in items:
             try:
-                _persist_item(
+                harvested_obj = _persist_item(
                     item=item,
                     user=user,
                 )
+                if harvested_obj and harvested_obj.is_indexed():
+                    page_ids_by_type[harvested_obj.type_data].append(
+                        harvested_obj.identifier
+                    )
             except Exception as exc:
                 logging.error(f"Erro ao persistir item: {exc}")
+
+        _transform_batches_by_type("HarvestedSciELOData", page_ids_by_type)
 
         start += per_page
         if total_count is not None and start >= total_count:
@@ -135,7 +146,7 @@ def harvest_data(user, type, per_page=100, start=0):
 def _persist_item(item, user):
     data, source_url, type_data, identifier = _fetch_data_by_type(item)
 
-    _persist_harvested(
+    return _persist_harvested(
         user=user,
         source_url=source_url,
         identifier=identifier,
@@ -176,7 +187,7 @@ def _fetch_data_by_type(item):
         data["publisher"] = {
             "name": publisher,
             "identifier": dataverse_identifier,
-            "url": dataverse_obj.get_url_dataverse
+            "url": dataverse_obj.get_url_dataverse if dataverse_obj else None,
         }
         return data, source_url, type_data, global_id
 

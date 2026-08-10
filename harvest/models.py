@@ -39,8 +39,9 @@ class IndexStatus(models.TextChoices):
 class HarvestModelChoice(models.TextChoices):
     """Tipos de modelo de coleta para associar scripts de transformação"""
 
+    ARTICLE = "HarvestedArticle", "Article"
     PREPRINT = "HarvestedPreprint", "Preprint"
-    BOOKS = "HarvestedBooks", "Books"
+    BOOK = "HarvestedBook", "Book"
     SCIELO_DATA_DATASET = "HarvestedSciELOData_dataset", "SciELO Data - Dataset"
     SCIELO_DATA_DATAVERSE = "HarvestedSciELOData_dataverse", "SciELO Data - Dataverse"
 
@@ -123,6 +124,9 @@ class GlobalMetricsUploadFile(CommonControlField):
             existing.file.delete(save=False)
 
         self.pk = existing.pk
+        self.created = existing.created
+        if not self.creator_id:
+            self.creator = existing.creator
         self._state.adding = False
         return True
 
@@ -260,6 +264,9 @@ class BaseHarvestedData(CommonControlField):
         self.updated = timezone.now()
         self.save(update_fields=["harvest_status", "index_status", "updated"])
 
+    def is_indexed(self):
+        return bool(self.identifier) and self.index_status == IndexStatus.SUCCESS
+
     def set_attrs_from_article_info(self, article_info, datestamp):
         datestamp = datestamp if datestamp else None
         self.source_url = (
@@ -302,7 +309,25 @@ class HarvestedPreprint(BaseHarvestedData, ClusterableModel):
         )
         return latest.last_resumption_token if latest else None
 
-class HarvestedBooks(BaseHarvestedData, ClusterableModel):
+
+class HarvestedArticle(BaseHarvestedData, ClusterableModel):
+    """
+    Modelo para dados de artigos SciELO coletados via ArticleMeta.
+    """
+
+    class Meta:
+        verbose_name = _("Dados de artigo SciELO")
+        verbose_name_plural = _("Dados de artigos SciELO")
+
+    @classmethod
+    def get_latest_article(cls):
+        try:
+            return cls.objects.exclude(datestamp__isnull=True).latest("datestamp")
+        except cls.DoesNotExist:
+            return None
+
+
+class HarvestedBook(BaseHarvestedData, ClusterableModel):
     type_data = models.CharField(
         _("Tipo de data"),
         max_length=20,
@@ -334,7 +359,7 @@ class HarvestedBooks(BaseHarvestedData, ClusterableModel):
     ]
 
     class Meta:
-        verbose_name = _("Dados de Scielo Books")
+        verbose_name = _("Dados de Scielo Book")
         verbose_name_plural = _("Dados de Scielo Books")
 
 
@@ -406,9 +431,15 @@ class HarvestErrorLogPreprint(BaseHarvestErrorLog):
     )
 
 
-class HarvestErrorLogBooks(BaseHarvestErrorLog):
+class HarvestErrorLogArticle(BaseHarvestErrorLog):
+    article = ParentalKey(
+        HarvestedArticle, related_name="harvest_error_log", on_delete=models.CASCADE
+    )
+
+
+class HarvestErrorLogBook(BaseHarvestErrorLog):
     book = ParentalKey(
-        HarvestedBooks, related_name="harvest_error_log", on_delete=models.CASCADE
+        HarvestedBook, related_name="harvest_error_log", on_delete=models.CASCADE
     )
 
 
