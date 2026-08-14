@@ -64,6 +64,7 @@ def apply_global_metrics_upload_to_silver(
             stats["errors"].extend(failures)
 
     stats["unresolved_countries"] = sorted(unresolved_countries)
+    upload_file.save_stats(stats)
     logging.info(
         f"Métricas globais do upload {upload_file.pk} aplicadas em {silver_index}: "
         f"{stats['groups_processed']} grupos, {stats['matches_found']} matches, "
