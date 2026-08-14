@@ -1,7 +1,7 @@
 import io
 import tempfile
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase, override_settings
@@ -23,8 +23,9 @@ from .global_metrics.indexing import (
 )
 from .global_metrics.opensearch import (
     build_global_metrics_update_by_query_body,
-    build_harvest_metric_lookup_body,
-    iter_silver_issn_year_groups,
+    iter_harvest_metric_groups,
+    source_file_query,
+    update_silver_group_by_query,
 )
 from .global_metrics.parsing import global_metric_row_from_hit
 from .harvests.harvest_articles import (
@@ -120,7 +121,7 @@ class GlobalMetricsUploadTaskTests(SimpleTestCase):
                     "scopus_active_in_the_year": "1",
                     "wos_active_in_the_year": 0,
                     "scielo_active_and_valid_in_the_year": 1,
-                    "country": "Brasil",
+                    "country": "Brazil",
                 }
             }
         }
@@ -130,7 +131,7 @@ class GlobalMetricsUploadTaskTests(SimpleTestCase):
         self.assertEqual(row["issns"], ["12345678", "1234-5678", "8765-4321"])
         self.assertEqual(row["year"], 2024)
         self.assertEqual(row["indexed_in"], ["Scopus", "SciELO"])
-        self.assertEqual(row["country"], "Brasil")
+        self.assertEqual(row["country"], "Brazil")
         self.assertEqual(row["country_code"], "BR")
 
     def test_global_metrics_upload_requires_columns_used_by_processing(self):
@@ -168,48 +169,108 @@ class GlobalMetricsUploadTaskTests(SimpleTestCase):
 
         self.assertEqual(rows[0][1]["scielo_active_and_valid_in_the_year"], "1")
 
-    def test_iter_silver_issn_year_groups_deduplicates_combinations(self):
+    def test_source_file_query_filters_upload_file(self):
+        query = source_file_query("metrics.csv")
+
+        self.assertEqual(query["bool"]["minimum_should_match"], 1)
+        self.assertIn({"term": {"source_file.keyword": "metrics.csv"}}, query["bool"]["should"])
+
+    def test_iter_harvest_metric_groups_groups_canonical_issns(self):
         client = DummyOpenSearchClient(
             [
                 {
                     "_source": {
-                        "publication_year": 2024,
-                        "source": {"issns": ["12345678", "8765-4321"]},
+                        "raw_data": {
+                            "issns": "12345678, 8765-4321",
+                            "year": "2024",
+                            "scopus_active_in_the_year": "1",
+                            "wos_active_in_the_year": 0,
+                            "scielo_active_and_valid_in_the_year": 0,
+                            "country": "Brazil",
+                        }
+                    }
+                }
+            ]
+        )
+
+        groups = list(
+            iter_harvest_metric_groups(client, "global_metrics_upload_file", "metrics.csv")
+        )
+
+        self.assertEqual(client.last_index, "global_metrics_upload_file")
+        self.assertEqual(client.last_search_body["query"]["bool"]["minimum_should_match"], 1)
+        self.assertEqual(
+            [group["year"] for group in groups],
+            [2024, 2024],
+        )
+        self.assertEqual(groups[0]["issns"], ["12345678", "1234-5678"])
+        self.assertEqual(groups[1]["issns"], ["8765-4321"])
+        self.assertEqual(groups[0]["indexed_in"], {"Scopus"})
+        self.assertEqual(groups[0]["country_codes"], ["BR"])
+
+    def test_iter_harvest_metric_groups_merges_rows_for_same_issn_year(self):
+        client = DummyOpenSearchClient(
+            [
+                {
+                    "_source": {
+                        "raw_data": {
+                            "issns": "1234-5678",
+                            "year": "2024",
+                            "scopus_active_in_the_year": "1",
+                            "wos_active_in_the_year": 0,
+                            "scielo_active_and_valid_in_the_year": 0,
+                            "country": "Brasil",
+                        }
                     }
                 },
                 {
                     "_source": {
-                        "publication_year": 2024,
-                        "source": {"issns": ["1234-5678"]},
+                        "raw_data": {
+                            "issns": "12345678",
+                            "year": "2024",
+                            "scopus_active_in_the_year": 0,
+                            "wos_active_in_the_year": "1",
+                            "scielo_active_and_valid_in_the_year": 0,
+                            "country": "Brasil",
+                        }
                     }
                 },
             ]
         )
 
-        groups = list(iter_silver_issn_year_groups(client, "silver_scientific_production"))
+        groups = list(
+            iter_harvest_metric_groups(client, "global_metrics_upload_file", "metrics.csv")
+        )
 
-        self.assertEqual(
-            groups,
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["year"], 2024)
+        self.assertEqual(groups[0]["issns"], ["1234-5678", "12345678"])
+        self.assertEqual(groups[0]["indexed_in"], {"Scopus", "WoS"})
+        self.assertEqual(groups[0]["metric_rows"], 2)
+
+    def test_iter_harvest_metric_groups_skips_rows_without_applicable_metrics(self):
+        client = DummyOpenSearchClient(
             [
-                {"year": 2024, "issns": ["12345678", "1234-5678"]},
-                {"year": 2024, "issns": ["8765-4321"]},
-            ],
+                {
+                    "_source": {
+                        "raw_data": {
+                            "issns": "1234-5678",
+                            "year": "2024",
+                            "scopus_active_in_the_year": 0,
+                            "wos_active_in_the_year": 0,
+                            "scielo_active_and_valid_in_the_year": 0,
+                            "country": "",
+                        }
+                    }
+                }
+            ]
         )
 
-    def test_build_harvest_metric_lookup_body_filters_upload_issn_and_year(self):
-        body = build_harvest_metric_lookup_body(
-            source_file="metrics.csv",
-            year=2024,
-            issns=["12345678", "1234-5678"],
+        groups = list(
+            iter_harvest_metric_groups(client, "global_metrics_upload_file", "metrics.csv")
         )
 
-        query = body["query"]["bool"]
-        self.assertEqual(query["filter"][0]["bool"]["minimum_should_match"], 1)
-        self.assertIn({"term": {"raw_data.year": 2024}}, query["filter"][1]["bool"]["should"])
-        self.assertIn(
-            {"match_phrase": {"raw_data.issns": "1234-5678"}},
-            query["must"][0]["bool"]["should"],
-        )
+        self.assertEqual(groups, [])
 
     def test_build_global_metrics_update_by_query_body_preserves_params(self):
         body = build_global_metrics_update_by_query_body(
@@ -230,6 +291,26 @@ class GlobalMetricsUploadTaskTests(SimpleTestCase):
         self.assertEqual(params["country_codes"], ["BR"])
         self.assertEqual(params["world_region"], "South America")
         self.assertIn("oca_data.scielo.source", body["script"]["source"])
+
+    def test_update_silver_group_by_query_does_not_wait_for_completion(self):
+        client = MagicMock()
+        client.update_by_query.return_value = {"task": "task-1"}
+
+        response = update_silver_group_by_query(
+            client=client,
+            silver_index="silver_scientific_production",
+            group={
+                "year": 2024,
+                "issns": ["1234-5678"],
+                "indexed_in": {"Scopus"},
+                "country_codes": ["BR"],
+            },
+        )
+
+        self.assertEqual(response, {"task": "task-1"})
+        kwargs = client.update_by_query.call_args.kwargs
+        self.assertFalse(kwargs["wait_for_completion"])
+        self.assertFalse(kwargs["refresh"])
 
     @override_settings(GLOBAL_METRICS_UPLOAD_ERROR_INDEX="global_metrics_upload_errors")
     @patch("harvest.global_metrics.indexing.OpenSearchIndexClient")
@@ -345,8 +426,12 @@ class GlobalMetricsUploadTaskTests(SimpleTestCase):
 class DummyOpenSearchClient:
     def __init__(self, hits):
         self.hits = hits
+        self.last_index = None
+        self.last_search_body = None
 
     def search(self, index, body, scroll):
+        self.last_index = index
+        self.last_search_body = body
         return {"_scroll_id": "scroll-1", "hits": {"hits": self.hits}}
 
     def scroll(self, scroll_id, scroll):
