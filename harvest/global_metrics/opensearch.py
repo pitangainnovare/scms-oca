@@ -161,7 +161,14 @@ def global_metrics_update_script():
                 }
             }
         }
-
+        if (params.country_codes != null && params.country_codes.size() > 0) {
+            ctx._source.oca_data.scielo.source.country_code = params.country_codes.get(0);
+            if (params.world_region != null) {
+                ctx._source.oca_data.scielo.source.world_region = params.world_region;
+            } else {
+                ctx._source.oca_data.scielo.source.remove('world_region');
+            }
+        }
     """
 
 
