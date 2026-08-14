@@ -300,24 +300,21 @@ def _index_upload_error(
     result,
     message,
 ):
-    try:
-        action_result = next(iter(result.values())) if isinstance(result, dict) else {}
-        OpenSearchIndexClient(client=client).index_error(
-            component="harvest.global_metrics",
-            operation="upload_indexing",
-            message=message,
-            error_type="BulkIndexFailure",
-            context={
-                "source_file": source_file,
-                "source_format": source_format,
-                "target_index": target_index,
-                "document_id": action_result.get("_id"),
-                "bulk_result": result,
-            },
-            error_index_name=settings.GLOBAL_METRICS_UPLOAD_ERROR_INDEX,
-        )
-    except Exception:
-        logger.exception("Falha ao registrar erro de upload de métricas globais no OpenSearch")
+    action_result = next(iter(result.values())) if isinstance(result, dict) else {}
+    OpenSearchIndexClient(client=client).index_error(
+        component="harvest.global_metrics",
+        operation="upload_indexing",
+        message=message,
+        error_type="BulkIndexFailure",
+        context={
+            "source_file": source_file,
+            "source_format": source_format,
+            "target_index": target_index,
+            "document_id": action_result.get("_id"),
+            "bulk_result": result,
+        },
+        error_index_name=settings.GLOBAL_METRICS_UPLOAD_ERROR_INDEX,
+    )
 
 
 def _append_error(stats, error):

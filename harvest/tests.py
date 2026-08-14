@@ -366,7 +366,7 @@ class GlobalMetricsUploadTaskTests(SimpleTestCase):
     @patch("harvest.global_metrics.indexing.OpenSearchIndexClient")
     @patch("harvest.global_metrics.indexing.streaming_bulk")
     @patch("harvest.global_metrics.indexing.get_opensearch_client")
-    def test_upload_error_index_failure_does_not_interrupt_import(
+    def test_upload_error_index_failure_raises(
         self,
         mock_get_client,
         mock_streaming_bulk,
@@ -381,16 +381,14 @@ class GlobalMetricsUploadTaskTests(SimpleTestCase):
 
         mock_streaming_bulk.side_effect = fake_streaming_bulk
 
-        stats = index_prepared_rows(
-            rows=iter([(2, {"baseid": "B123", "year": "2024"})]),
-            file_name="metrics.csv",
-            extension=".csv",
-            index_name="global_metrics_upload_file",
-            chunk_size=1,
-        )
-
-        self.assertEqual(stats.failed, 1)
-        self.assertEqual(len(stats.errors), 1)
+        with self.assertRaises(RuntimeError):
+            index_prepared_rows(
+                rows=iter([(2, {"baseid": "B123", "year": "2024"})]),
+                file_name="metrics.csv",
+                extension=".csv",
+                index_name="global_metrics_upload_file",
+                chunk_size=1,
+            )
 
     @patch("harvest.global_metrics.indexing.OpenSearchIndexClient")
     @patch("harvest.global_metrics.indexing.streaming_bulk")
