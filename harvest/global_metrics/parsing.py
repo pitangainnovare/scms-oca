@@ -1,7 +1,13 @@
 import re
+from functools import lru_cache
 
 from etl.transform.normalizers import normalize_country_code, normalize_issn
 from search_gateway.option_normalization import clean_text, normalize_boolean
+
+
+@lru_cache(maxsize=4096)
+def normalize_country_code_cached(country):
+    return normalize_country_code(country)
 
 
 def global_metric_row_from_hit(hit):
@@ -24,7 +30,7 @@ def global_metric_row_from_hit(hit):
         indexed_in.append("SciELO")
 
     country = clean_text(raw_data.get("country"))
-    country_code = normalize_country_code(country)
+    country_code = normalize_country_code_cached(country)
     if not indexed_in and not country_code:
         return None
 

@@ -4,8 +4,7 @@ from pathlib import Path
 from django.conf import settings
 
 from harvest.global_metrics.opensearch import (
-    find_global_metric_group_for_silver_group,
-    iter_silver_issn_year_groups,
+    iter_harvest_metric_groups,
     update_silver_group_by_query,
 )
 from harvest.models import GlobalMetricsUploadFile
@@ -34,9 +33,8 @@ def apply_global_metrics_upload_to_silver(
     stats = {
         "upload_file_id": upload_file_id,
         "source_file": source_file,
+        "harvest_rows": 0,
         "metric_rows": 0,
-        "silver_groups_seen": 0,
-        "harvest_lookups": 0,
         "groups_processed": 0,
         "matches_found": 0,
         "updated": 0,
@@ -46,27 +44,12 @@ def apply_global_metrics_upload_to_silver(
     }
     unresolved_countries = set()
 
-
-    silver_groups = list(
-        iter_silver_issn_year_groups(
-            client=client,
-            silver_index=silver_index,
-        )
-    )
-
-    for silver_group in silver_groups:
-        stats["silver_groups_seen"] += 1
-        stats["harvest_lookups"] += 1
-        group = find_global_metric_group_for_silver_group(
-            client=client,
-            harvest_index=harvest_index,
-            source_file=source_file,
-            silver_group=silver_group,
-        )
-        if group is None:
-            continue
-
-        stats["metric_rows"] += group.pop("metric_rows", 0)
+    for group in iter_harvest_metric_groups(
+        client=client,
+        harvest_index=harvest_index,
+        source_file=source_file,
+    ):
+        stats["harvest_rows"] += group.pop("metric_rows", 0)
         stats["groups_processed"] += 1
         unresolved_countries.update(group.pop("unresolved_countries", []))
         response = update_silver_group_by_query(
@@ -81,6 +64,7 @@ def apply_global_metrics_upload_to_silver(
             stats["errors"].extend(failures)
 
     stats["unresolved_countries"] = sorted(unresolved_countries)
+    upload_file.save_stats(stats)
     logging.info(
         f"Métricas globais do upload {upload_file.pk} aplicadas em {silver_index}: "
         f"{stats['groups_processed']} grupos, {stats['matches_found']} matches, "

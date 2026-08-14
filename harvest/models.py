@@ -60,9 +60,16 @@ class GlobalMetricsUploadFile(CommonControlField):
         editable=False,
         help_text=_("Indica se o arquivo já foi processado com sucesso."),
     )
+    stats = models.JSONField(
+        _("Estatísticas"),
+        default=dict,
+        blank=True,
+        help_text=_("Estatísticas da última aplicação das métricas no índice silver."),
+    )
 
     panels = [
         FieldPanel("file"),
+        FieldPanel("stats"),
     ]
 
     class Meta:
@@ -92,6 +99,7 @@ class GlobalMetricsUploadFile(CommonControlField):
         should_process = self._should_enqueue_processing()
         if should_process or replaced_existing:
             self.status = False
+            self.stats = {}
 
         super().save(*args, **kwargs)
 
@@ -133,6 +141,10 @@ class GlobalMetricsUploadFile(CommonControlField):
     def mark_processed(self):
         self.status = True
         self.save(update_fields=["status", "updated"])
+
+    def save_stats(self, stats):
+        self.stats = stats or {}
+        self.save(update_fields=["stats", "updated"])
 
     def _should_enqueue_processing(self):
         if not self.file:
