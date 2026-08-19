@@ -21,6 +21,7 @@ from .global_metrics.indexing import (
     index_prepared_rows,
     iter_file_rows,
 )
+from .global_metrics.process import process_global_metrics_upload_file
 from .global_metrics.opensearch import (
     build_global_metrics_update_by_query_body,
     iter_harvest_metric_groups,
@@ -103,6 +104,26 @@ class GlobalMetricsUploadFileTests(TestCase):
                 with second.file.open("rb") as stored_file:
                     self.assertEqual(stored_file.read(), b"second-version")
                 self.assertEqual(mock_delay.call_count, 2)
+
+    @patch("harvest.global_metrics.process.index_file_obj")
+    @patch("harvest.tasks.process_global_metrics_upload_file.delay")
+    def test_process_skips_reindex_when_already_processed(self, mock_delay, mock_index):
+        with tempfile.TemporaryDirectory() as media_root:
+            with override_settings(MEDIA_ROOT=media_root):
+                upload_file = GlobalMetricsUploadFile(creator=self.user)
+                upload_file.file = SimpleUploadedFile(
+                    "metrics.xlsx",
+                    b"already-indexed",
+                    content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+                with self.captureOnCommitCallbacks(execute=True):
+                    upload_file.save()
+                upload_file.mark_processed()
+
+                result = process_global_metrics_upload_file(upload_file.pk)
+
+        self.assertTrue(result["skipped"])
+        mock_index.assert_not_called()
 
     def test_overwrite_storage_does_not_add_suffix(self):
         storage_path = "global_metrics_uploads/metrics.xlsx"

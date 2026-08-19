@@ -11,6 +11,19 @@ def process_global_metrics_upload_file(upload_file_id, index_name=None, chunk_si
     from harvest.models import GlobalMetricsUploadFile
 
     upload_file = GlobalMetricsUploadFile.objects.get(pk=upload_file_id)
+    if upload_file.status:
+        logging.info(
+            "Arquivo de métricas globais %s já foi processado; "
+            "reindexação ignorada.",
+            upload_file.pk,
+        )
+        return {
+            "skipped": True,
+            "rows_read": 0,
+            "indexed": 0,
+            "failed": 0,
+            "errors": [],
+        }
 
     with upload_file.file.open("rb") as file_obj:
         stats = index_file_obj(

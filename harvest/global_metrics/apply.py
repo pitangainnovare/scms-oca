@@ -18,6 +18,10 @@ def apply_global_metrics_upload_to_silver(
 ):
 
     upload_file = GlobalMetricsUploadFile.objects.get(pk=upload_file_id)
+    if not upload_file.status:
+        raise RuntimeError(
+            "O arquivo de métricas globais ainda não foi processado."
+        )
     client = get_opensearch_client()
     if client is None:
         raise RuntimeError("Cliente OpenSearch não configurado.")
