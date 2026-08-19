@@ -1,5 +1,4 @@
 import logging
-from urllib.parse import urlencode
 
 from django.conf import settings
 from django.utils import timezone
@@ -9,9 +8,10 @@ from collections import defaultdict
 from core.utils.utils import fetch_data
 from harvest.bronze_transform import _transform_batches_by_type
 from harvest.exception_logs import ExceptionContext
+from harvest.harvesters.common import JSON_HEADERS, build_url
 from harvest.models import HarvestedSciELOData, HarvestErrorLogSciELOData
 
-DEFAULT_HEADERS = {"Accept": "application/json", "user-agent": settings.USER_AGENT}
+DEFAULT_HEADERS = JSON_HEADERS
 
 API_SCIELO_DATA = settings.SITE_SCIELO_DATA + "/api/search"
 DATASET_URL = settings.SITE_SCIELO_DATA + "/api/datasets/:persistentId/"
@@ -36,10 +36,6 @@ def _extract_total_count(payload):
     return None
 
 
-def _build_url(base_url, params):
-    return f"{base_url}?{urlencode(params, doseq=True)}"
-
-
 def fetch_search_page(search_url, start, per_page, headers, type):
     params = [
         ("q", "*"),
@@ -47,13 +43,13 @@ def fetch_search_page(search_url, start, per_page, headers, type):
         ("per_page", per_page),
         ("start", start),
     ]
-    url = _build_url(search_url, params)
+    url = build_url(search_url, params)
     payload = fetch_data(url, headers=headers, json=True, timeout=60, verify=True)
     return _extract_items(payload), _extract_total_count(payload)
 
 
 def fetch_dataset_data(headers, global_id):
-    url = _build_url(DATASET_URL, {"persistentId": global_id})
+    url = build_url(DATASET_URL, {"persistentId": global_id})
     payload = fetch_data(url, headers=headers, json=True, timeout=60, verify=True)
     return payload.get("data") if isinstance(payload, dict) else None
 
@@ -176,7 +172,7 @@ def _fetch_data_by_type(item):
         if not global_id:
             raise ValueError("Dataset sem 'global_id'.")
 
-        source_url = _build_url(DATASET_URL, {"persistentId": global_id})
+        source_url = build_url(DATASET_URL, {"persistentId": global_id})
         publisher = item.get("publisher")
         dataverse_identifier = item.get("identifier_of_dataverse")
         dataverse_obj = HarvestedSciELOData.objects.filter(identifier=dataverse_identifier).first()

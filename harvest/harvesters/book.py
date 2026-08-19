@@ -1,5 +1,4 @@
 import logging
-from urllib.parse import urlencode
 
 from django.conf import settings
 from django.db.models import Max
@@ -8,14 +7,9 @@ from django.utils import timezone
 from core.utils.utils import fetch_data
 from harvest.bronze_transform import transform_indexed_page
 from harvest.exception_logs import ExceptionContext
+from harvest.harvesters.common import build_url
 from harvest.indexing import delete_harvested_document
 from harvest.models import HarvestedBook, HarvestErrorLogBook
-
-
-def _build_url(base_url, params=None):
-    if not params:
-        return base_url
-    return f"{base_url}?{urlencode(params, doseq=True)}"
 
 
 def _sanitize_raw_data(payload):
@@ -62,7 +56,7 @@ def fetch_changes_page(base_url, db_name, since, limit, headers):
     params = {"since": since}
     if limit is not None:
         params["limit"] = limit
-    url = _build_url(
+    url = build_url(
         f"{base_url}/{db_name}/_changes",
         params,
     )

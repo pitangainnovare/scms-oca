@@ -1,6 +1,5 @@
 import logging
 from datetime import datetime, time
-from urllib.parse import urlencode
 
 from django.conf import settings
 from django.utils import timezone
@@ -9,11 +8,10 @@ from django.utils.dateparse import parse_date
 from core.utils.utils import fetch_data
 from harvest.bronze_transform import transform_indexed_page
 from harvest.exception_logs import ExceptionContext
+from harvest.harvesters.common import build_url
 from harvest.models import HarvestedArticle, HarvestErrorLogArticle
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_HEADERS = {"Accept": "application/json", "user-agent": settings.USER_AGENT}
 
 
 def _articlemeta_base_url():
@@ -21,9 +19,7 @@ def _articlemeta_base_url():
 
 
 def _build_url(path, params=None):
-    query = urlencode(params or {}, doseq=True)
-    url = f"{_articlemeta_base_url()}{path}"
-    return f"{url}?{query}" if query else url
+    return build_url(f"{_articlemeta_base_url()}{path}", params)
 
 
 def fetch_article_identifiers_page(
