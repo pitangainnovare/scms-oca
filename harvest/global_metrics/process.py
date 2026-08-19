@@ -13,10 +13,9 @@ def process_global_metrics_upload_file(upload_file_id, index_name=None, chunk_si
     upload_file = GlobalMetricsUploadFile.objects.get(pk=upload_file_id)
     if upload_file.status:
         logging.info(
-            "Arquivo de métricas globais %s já foi processado; "
-            "reindexação ignorada.",
-            upload_file.pk,
+            f"Arquivo de métricas globais {upload_file.pk} já foi processado; reindexação ignorada."
         )
+
         return {
             "skipped": True,
             "rows_read": 0,
