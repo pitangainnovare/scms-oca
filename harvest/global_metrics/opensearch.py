@@ -1,6 +1,7 @@
+import logging
 import time
 
-from opensearchpy.exceptions import NotFoundError
+from opensearchpy.exceptions import NotFoundError, TransportError
 
 from etl.transform.normalizers import normalize_issn
 from etl.world_regions import world_region_for_country
@@ -9,6 +10,9 @@ from harvest.global_metrics.parsing import (
     global_metric_row_from_hit,
 )
 from search_gateway.option_normalization import clean_text
+
+_RETRY_DELAYS = (2, 5, 10)
+
 
 def iter_harvest_metric_groups(client, harvest_index, source_file):
     """Percorre o harvest do arquivo de upload e devolve grupos ISSN + ano.
@@ -92,15 +96,31 @@ def update_silver_group_by_query(client, silver_index, group):
     """Aplica as métricas de um grupo no silver via ``update_by_query``.
 
     Dispara a atualização em background (``wait_for_completion=False``)
-    para evitar o timeout HTTP de 40s.
+    para evitar o timeout HTTP de 40s. Retenta em 429 para não abortar
+    o apply quando o cluster recusa a task.
     """
-    return client.update_by_query(
-        index=silver_index,
-        body=build_global_metrics_update_by_query_body(group),
-        conflicts="proceed",
-        refresh=False,
-        wait_for_completion=False,
-    )
+    params = {
+        "index": silver_index,
+        "body": build_global_metrics_update_by_query_body(group),
+        "conflicts": "proceed",
+        "refresh": False,
+        "wait_for_completion": False,
+    }
+
+    for attempt in range(len(_RETRY_DELAYS) + 1):
+        try:
+            return client.update_by_query(**params)
+        except TransportError as exc:
+            status = getattr(exc, "status_code", None)
+            if status is None and exc.args:
+                status = exc.args[0]
+            if status != 429 or attempt == len(_RETRY_DELAYS):
+                raise
+            delay = _RETRY_DELAYS[attempt]
+            logging.warning(
+                f"OpenSearch recusou update_by_query com 429; nova tentativa em {delay}s."
+            )
+            time.sleep(delay)
 
 
 def wait_for_update_task(client, task_id, poll_interval=1):

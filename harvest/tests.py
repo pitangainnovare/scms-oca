@@ -335,6 +335,31 @@ class GlobalMetricsUploadTaskTests(SimpleTestCase):
         self.assertFalse(kwargs["refresh"])
 
     @patch("harvest.global_metrics.opensearch.time.sleep")
+    def test_update_silver_group_by_query_retries_on_429(self, mock_sleep):
+        from opensearchpy.exceptions import TransportError
+
+        client = MagicMock()
+        client.update_by_query.side_effect = [
+            TransportError(429, "circuit_breaking_exception", "too large"),
+            {"task": "task-2"},
+        ]
+
+        response = update_silver_group_by_query(
+            client=client,
+            silver_index="silver_scientific_production",
+            group={
+                "year": 2024,
+                "issns": ["1234-5678"],
+                "indexed_in": {"Scopus"},
+                "country_codes": ["BR"],
+            },
+        )
+
+        self.assertEqual(response, {"task": "task-2"})
+        self.assertEqual(client.update_by_query.call_count, 2)
+        mock_sleep.assert_called()
+
+    @patch("harvest.global_metrics.opensearch.time.sleep")
     def test_wait_for_update_task_returns_completed_response(self, mock_sleep):
         client = MagicMock()
         client.tasks.get.side_effect = [
