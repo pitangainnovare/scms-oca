@@ -1,5 +1,5 @@
 // Transforma o dado bruto de artigos coletado do ArticleMeta (indice raw)
-// no documento bronze de artigos (ver harvest/mapping_bronze_articles.py).
+// no documento bronze de artigos (ver harvest/mappings/bronze_article.py).
 // Executado como script Painless em um _reindex do OpenSearch, onde
 // ctx._source e o documento de origem e passa a ser o documento de destino.
 

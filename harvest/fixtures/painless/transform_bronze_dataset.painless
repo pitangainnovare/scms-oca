@@ -1,5 +1,5 @@
 // Transforma o dado bruto de datasets coletados do SciELO Data (indice raw)
-// no documento bronze de dataset (ver harvest/mapping_bronze_dataset.py).
+// no documento bronze de dataset (ver harvest/mappings/bronze_dataset.py).
 // Executado como script Painless em um _reindex do OpenSearch.
 
 // ---------------------------------------------------------------------------

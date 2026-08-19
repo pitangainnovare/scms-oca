@@ -1,5 +1,5 @@
 // Transforma o dado bruto de dataverses coletados do SciELO Data (indice raw)
-// no documento bronze de dataverse (ver harvest/mapping_bronze_dataverse.py).
+// no documento bronze de dataverse (ver harvest/mappings/bronze_dataverse.py).
 // Executado como script Painless em um _reindex do OpenSearch.
 
 // ---------------------------------------------------------------------------

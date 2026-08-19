@@ -1,5 +1,5 @@
 // Transforma o dado bruto de preprints coletados do SciELO Preprints (indice raw)
-// no documento bronze de preprint (ver harvest/mapping_bronze_preprints.py).
+// no documento bronze de preprint (ver harvest/mappings/bronze_preprint.py).
 // Executado como script Painless em um _reindex do OpenSearch.
 
 // ---------------------------------------------------------------------------

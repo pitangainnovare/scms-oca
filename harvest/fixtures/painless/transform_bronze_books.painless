@@ -1,5 +1,5 @@
 // Transforma o dado bruto de livros coletado do SciELO Books (indice raw)
-// no documento bronze de livros (ver harvest/mapping_bronze_books.py).
+// no documento bronze de livros (ver harvest/mappings/bronze_book.py).
 // Executado como script Painless em um _reindex do OpenSearch.
 
 // ---------------------------------------------------------------------------
