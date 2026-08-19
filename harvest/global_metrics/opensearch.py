@@ -1,3 +1,7 @@
+import time
+
+from opensearchpy.exceptions import NotFoundError
+
 from etl.transform.normalizers import normalize_issn
 from etl.world_regions import world_region_for_country
 from harvest.global_metrics.parsing import (
@@ -97,6 +101,26 @@ def update_silver_group_by_query(client, silver_index, group):
         refresh=False,
         wait_for_completion=False,
     )
+
+
+def wait_for_update_task(client, task_id, poll_interval=1):
+    """Aguarda uma task de ``update_by_query`` e devolve sua resposta."""
+    while True:
+        try:
+            result = client.tasks.get(task_id=task_id)
+        except NotFoundError as exc:
+            raise RuntimeError(
+                f"Task OpenSearch {task_id} não encontrada."
+            ) from exc
+
+        if not result.get("completed"):
+            time.sleep(poll_interval)
+            continue
+        if error := result.get("error"):
+            raise RuntimeError(
+                f"Task OpenSearch {task_id} falhou: {error}"
+            )
+        return result.get("response", {})
 
 
 def build_global_metrics_update_by_query_body(group):

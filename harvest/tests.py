@@ -27,6 +27,7 @@ from .global_metrics.opensearch import (
     iter_harvest_metric_groups,
     source_file_query,
     update_silver_group_by_query,
+    wait_for_update_task,
 )
 from .global_metrics.parsing import global_metric_row_from_hit
 from .harvests.harvest_articles import (
@@ -332,6 +333,44 @@ class GlobalMetricsUploadTaskTests(SimpleTestCase):
         kwargs = client.update_by_query.call_args.kwargs
         self.assertFalse(kwargs["wait_for_completion"])
         self.assertFalse(kwargs["refresh"])
+
+    @patch("harvest.global_metrics.opensearch.time.sleep")
+    def test_wait_for_update_task_returns_completed_response(self, mock_sleep):
+        client = MagicMock()
+        client.tasks.get.side_effect = [
+            {"completed": False},
+            {
+                "completed": True,
+                "response": {"total": 3, "updated": 2},
+            },
+        ]
+
+        response = wait_for_update_task(client, "t1", poll_interval=0.1)
+
+        self.assertEqual(response, {"total": 3, "updated": 2})
+        mock_sleep.assert_called_once_with(0.1)
+
+    def test_wait_for_update_task_raises_when_task_is_missing(self):
+        from opensearchpy.exceptions import NotFoundError
+
+        client = MagicMock()
+        client.tasks.get.side_effect = NotFoundError(404, "not found", {})
+
+        with self.assertRaisesMessage(RuntimeError, "gone"):
+            wait_for_update_task(client, "gone")
+
+    def test_wait_for_update_task_raises_on_task_error(self):
+        client = MagicMock()
+        client.tasks.get.return_value = {
+            "completed": True,
+            "error": {"type": "circuit_breaking_exception"},
+        }
+
+        with self.assertRaisesMessage(
+            RuntimeError,
+            "circuit_breaking_exception",
+        ):
+            wait_for_update_task(client, "failed-task")
 
     @override_settings(GLOBAL_METRICS_UPLOAD_ERROR_INDEX="global_metrics_upload_errors")
     @patch("harvest.global_metrics.indexing.OpenSearchIndexClient")

@@ -2,10 +2,12 @@ import logging
 from pathlib import Path
 
 from django.conf import settings
+from django.db import close_old_connections
 
 from harvest.global_metrics.opensearch import (
     iter_harvest_metric_groups,
     update_silver_group_by_query,
+    wait_for_update_task,
 )
 from harvest.models import GlobalMetricsUploadFile
 from search_gateway.client import get_opensearch_client
@@ -33,12 +35,15 @@ def apply_global_metrics_upload_to_silver(
         "silver_scientific_production",
     )
     source_file = Path(upload_file.file.name).name
+    logging.info(
+        f"Arquivo de métricas globais {upload_file.pk} ({source_file}) já foi processado; "
+        f"iniciando update no índice silver {silver_index}."
+    )
 
     stats = {
         "upload_file_id": upload_file_id,
         "source_file": source_file,
         "harvest_rows": 0,
-        "metric_rows": 0,
         "groups_processed": 0,
         "matches_found": 0,
         "updated": 0,
@@ -48,24 +53,34 @@ def apply_global_metrics_upload_to_silver(
     }
     unresolved_countries = set()
 
-    for group in iter_harvest_metric_groups(
-        client=client,
-        harvest_index=harvest_index,
-        source_file=source_file,
-    ):
-        stats["harvest_rows"] += group.pop("metric_rows", 0)
-        stats["groups_processed"] += 1
-        unresolved_countries.update(group.pop("unresolved_countries", []))
-        response = update_silver_group_by_query(
+    try:
+        groups = iter_harvest_metric_groups(
             client=client,
-            silver_index=silver_index,
-            group=group,
+            harvest_index=harvest_index,
+            source_file=source_file,
         )
-        stats["matches_found"] += response.get("total", 0)
-        stats["updated"] += response.get("updated", 0)
-        stats["version_conflicts"] += response.get("version_conflicts", 0)
-        if failures := response.get("failures"):
-            stats["errors"].extend(failures)
+        for group in groups:
+            stats["harvest_rows"] += group.pop("metric_rows", 0)
+            unresolved_countries.update(group.pop("unresolved_countries", []))
+            submission = update_silver_group_by_query(
+                client=client,
+                silver_index=silver_index,
+                group=group,
+            )
+            task_id = submission.get("task")
+            if not task_id:
+                raise RuntimeError(
+                    "OpenSearch não retornou o ID da task de update_by_query."
+                )
+            response = wait_for_update_task(client, task_id)
+            stats["groups_processed"] += 1
+            stats["matches_found"] += response.get("total", 0)
+            stats["updated"] += response.get("updated", 0)
+            stats["version_conflicts"] += response.get("version_conflicts", 0)
+            if failures := response.get("failures"):
+                stats["errors"].extend(failures)
+    finally:
+        close_old_connections()
 
     stats["unresolved_countries"] = sorted(unresolved_countries)
     upload_file.save_stats(stats)
