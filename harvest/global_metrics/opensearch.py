@@ -11,7 +11,7 @@ from harvest.global_metrics.parsing import (
 )
 from search_gateway.option_normalization import clean_text
 
-_RETRY_DELAYS = (2, 5, 10)
+_RETRY_DELAYS = (3**2, 3**3, 3**4, 3**5)
 
 
 def iter_harvest_metric_groups(client, harvest_index, source_file):
