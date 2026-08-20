@@ -18,10 +18,6 @@ def _articlemeta_base_url():
     return getattr(settings, "ARTICLEMETA_BASE_URL", "https://articlemeta.scielo.org").rstrip("/")
 
 
-def _build_url(path, params=None):
-    return build_url(f"{_articlemeta_base_url()}{path}", params)
-
-
 def fetch_article_identifiers_page(
     limit=100,
     offset=0,
@@ -60,7 +56,7 @@ def fetch_article_identifiers_page(
     if collection:
         params["collection"] = collection
 
-    url = _build_url("/api/v1/article/identifiers/", params)
+    url = build_url(f"{_articlemeta_base_url()}/api/v1/article/identifiers/", params)
     payload = fetch_data(url, headers=headers, json=True, timeout=60, verify=True)
     objects = payload.get("objects", [])
     return objects, payload.get("meta", {})
@@ -85,7 +81,7 @@ def fetch_article_detail(code, collection=None, headers=None):
     params = {"code": code}
     if collection:
         params["collection"] = collection
-    url = _build_url("/api/v1/article/", params)
+    url = build_url(f"{_articlemeta_base_url()}/api/v1/article/", params)
     payload = fetch_data(url, headers=headers, json=True, timeout=60, verify=True)
     payload.pop("citations", None)
     return payload
@@ -212,7 +208,10 @@ def persist_article(user, identifier, article_payload):
         if not article_payload:
             raise ValueError("Article payload is empty or invalid.")
 
-        harvested_obj.source_url = _build_url("/api/v1/article/", {"code": identifier})
+        harvested_obj.source_url = build_url(
+            f"{_articlemeta_base_url()}/api/v1/article/",
+            {"code": identifier},
+        )
         harvested_obj.raw_data = article_payload
         harvested_obj.datestamp = parse_article_datestamp(article_payload)
         harvested_obj.last_harvest_attempt = timezone.now()
