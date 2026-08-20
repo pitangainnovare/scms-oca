@@ -1,11 +1,11 @@
 from django.core.management.base import BaseCommand, CommandError
 
-from harvest.mapping_bronze_articles import BRONZE_MAPPING as BRONZE_MAPPING_ARTICLES
-from harvest.mapping_bronze_books import BRONZE_MAPPING as BRONZE_MAPPING_BOOKS
-from harvest.mapping_bronze_dataset import BRONZE_MAPPING as BRONZE_MAPPING_DATASET
-from harvest.mapping_bronze_dataverse import BRONZE_MAPPING as BRONZE_MAPPING_DATAVERSE
-from harvest.mapping_bronze_preprints import BRONZE_MAPPING as BRONZE_MAPPING_PREPRINT
-from harvest.mapping_bronze_social_production import BRONZE_MAPPING as BRONZE_MAPPING_SOCIAL_PRODUCTION
+from harvest.mappings.bronze_article import BRONZE_MAPPING as BRONZE_MAPPING_ARTICLES
+from harvest.mappings.bronze_book import BRONZE_MAPPING as BRONZE_MAPPING_BOOKS
+from harvest.mappings.bronze_dataset import BRONZE_MAPPING as BRONZE_MAPPING_DATASET
+from harvest.mappings.bronze_dataverse import BRONZE_MAPPING as BRONZE_MAPPING_DATAVERSE
+from harvest.mappings.bronze_preprint import BRONZE_MAPPING as BRONZE_MAPPING_PREPRINT
+from harvest.mappings.bronze_social_production import BRONZE_MAPPING as BRONZE_MAPPING_SOCIAL_PRODUCTION
 from search_gateway.client import get_opensearch_client
 
 
@@ -47,7 +47,7 @@ class Command(BaseCommand):
         selected_indices = {index_choice: indices[index_choice]} if index_choice else indices
         for _name, (index_name, bronze_mapping) in selected_indices.items():
             self.ensure_index_exists(client=client, index_name=index_name, bronze_mapping=bronze_mapping)
- 
+
     def ensure_index_exists(self, client, index_name, bronze_mapping) -> None:
         """Create destination index with mapping if it doesn't exist."""
         if not client.indices.exists(index=index_name):

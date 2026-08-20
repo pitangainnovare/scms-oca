@@ -1,6 +1,5 @@
 import logging
 from datetime import datetime, time
-from urllib.parse import urlencode
 
 from django.conf import settings
 from django.utils import timezone
@@ -9,21 +8,14 @@ from django.utils.dateparse import parse_date
 from core.utils.utils import fetch_data
 from harvest.bronze_transform import transform_indexed_page
 from harvest.exception_logs import ExceptionContext
+from harvest.harvesters.common import build_url
 from harvest.models import HarvestedArticle, HarvestErrorLogArticle
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HEADERS = {"Accept": "application/json", "user-agent": settings.USER_AGENT}
-
 
 def _articlemeta_base_url():
     return getattr(settings, "ARTICLEMETA_BASE_URL", "https://articlemeta.scielo.org").rstrip("/")
-
-
-def _build_url(path, params=None):
-    query = urlencode(params or {}, doseq=True)
-    url = f"{_articlemeta_base_url()}{path}"
-    return f"{url}?{query}" if query else url
 
 
 def fetch_article_identifiers_page(
@@ -64,7 +56,7 @@ def fetch_article_identifiers_page(
     if collection:
         params["collection"] = collection
 
-    url = _build_url("/api/v1/article/identifiers/", params)
+    url = build_url(f"{_articlemeta_base_url()}/api/v1/article/identifiers/", params)
     payload = fetch_data(url, headers=headers, json=True, timeout=60, verify=True)
     objects = payload.get("objects", [])
     return objects, payload.get("meta", {})
@@ -89,7 +81,7 @@ def fetch_article_detail(code, collection=None, headers=None):
     params = {"code": code}
     if collection:
         params["collection"] = collection
-    url = _build_url("/api/v1/article/", params)
+    url = build_url(f"{_articlemeta_base_url()}/api/v1/article/", params)
     payload = fetch_data(url, headers=headers, json=True, timeout=60, verify=True)
     payload.pop("citations", None)
     return payload
@@ -216,7 +208,10 @@ def persist_article(user, identifier, article_payload):
         if not article_payload:
             raise ValueError("Article payload is empty or invalid.")
 
-        harvested_obj.source_url = _build_url("/api/v1/article/", {"code": identifier})
+        harvested_obj.source_url = build_url(
+            f"{_articlemeta_base_url()}/api/v1/article/",
+            {"code": identifier},
+        )
         harvested_obj.raw_data = article_payload
         harvested_obj.datestamp = parse_article_datestamp(article_payload)
         harvested_obj.last_harvest_attempt = timezone.now()

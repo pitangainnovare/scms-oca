@@ -11,17 +11,17 @@ from harvest.global_metrics.apply import (
 from harvest.global_metrics.process import (
     process_global_metrics_upload_file as run_process_global_metrics_upload_file,
 )
-from harvest.harvests.harvest_articles import (
+from harvest.harvesters.article import (
     harvest_articles,
     harvest_single_article_code,
 )
-from harvest.harvests.harvest_books import (
+from harvest.harvesters.book import (
     harvest_books,
     harvest_single_book,
     iter_changes,
 )
-from harvest.harvests.harvest_data import harvest_data, harvest_single_scielo_data
-from harvest.harvests.harvest_preprint import harvest_preprint
+from harvest.harvesters.dataset import harvest_data, harvest_single_scielo_data
+from harvest.harvesters.preprint import harvest_preprint
 from harvest.indexing import index_harvested_instance, index_harvested_raw_data
 
 from .bronze_transform import reconcile_missing_bronze_etl

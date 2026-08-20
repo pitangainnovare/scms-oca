@@ -28,12 +28,12 @@ from .global_metrics.opensearch import (
     update_silver_group_by_query,
 )
 from .global_metrics.parsing import global_metric_row_from_hit
-from .harvests.harvest_articles import (
+from .harvesters.article import (
     fetch_article_identifiers_page,
     harvest_articles,
 )
-from .harvests.harvest_data import harvest_data
-from .harvests.harvest_preprint import NODES, harvest_preprint
+from .harvesters.dataset import harvest_data
+from .harvesters.preprint import NODES, harvest_preprint
 from .bronze_transform import (
     _build_reindex_body,
     _refresh_source_for_page,
@@ -660,7 +660,7 @@ class HarvestArticlesTest(TestCase):
             },
         }
 
-    @patch("harvest.harvests.harvest_articles.fetch_data")
+    @patch("harvest.harvesters.article.fetch_data")
     def test_fetch_article_identifiers_page_uses_incremental_params(self, mock_fetch_data):
         mock_fetch_data.return_value = {
             "objects": [self.identifier_item],
@@ -684,10 +684,10 @@ class HarvestArticlesTest(TestCase):
         self.assertIn("until=2024-01-31", url)
         self.assertIn("collection=scl", url)
 
-    @patch("harvest.harvests.harvest_articles.transform_indexed_page")
+    @patch("harvest.harvesters.article.transform_indexed_page")
     @patch("harvest.signals.index_harvested_instance")
-    @patch("harvest.harvests.harvest_articles.fetch_article_detail")
-    @patch("harvest.harvests.harvest_articles.fetch_article_identifiers_page")
+    @patch("harvest.harvesters.article.fetch_article_detail")
+    @patch("harvest.harvesters.article.fetch_article_identifiers_page")
     def test_harvest_articles_paginates_and_persists_success(
         self,
         mock_fetch_page,
@@ -723,10 +723,10 @@ class HarvestArticlesTest(TestCase):
             ["S0100-879X1998000800011"],
         )
 
-    @patch("harvest.harvests.harvest_articles.transform_indexed_page")
+    @patch("harvest.harvesters.article.transform_indexed_page")
     @patch("harvest.signals.index_harvested_instance")
-    @patch("harvest.harvests.harvest_articles.fetch_article_detail")
-    @patch("harvest.harvests.harvest_articles.fetch_article_identifiers_page")
+    @patch("harvest.harvesters.article.fetch_article_detail")
+    @patch("harvest.harvesters.article.fetch_article_identifiers_page")
     def test_harvest_articles_records_failed_article(
         self,
         mock_fetch_page,
@@ -775,10 +775,10 @@ class HarvestArticleIndexingTests(TestCase):
             "raw_scielo_article_test",
         )
 
-    @patch("harvest.harvests.harvest_data._transform_batches_by_type")
+    @patch("harvest.harvesters.dataset._transform_batches_by_type")
     @patch("harvest.signals.index_harvested_instance")
-    @patch("harvest.harvests.harvest_data.fetch_dataverse_data")
-    @patch("harvest.harvests.harvest_data.fetch_search_page")
+    @patch("harvest.harvesters.dataset.fetch_dataverse_data")
+    @patch("harvest.harvesters.dataset.fetch_search_page")
     def test_harvest_data_paginates_using_total_count(
         self, mock_fetch_search, mock_fetch_dataverse, mock_index, mock_transform_batches
     ):
