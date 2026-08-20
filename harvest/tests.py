@@ -21,11 +21,13 @@ from .global_metrics.indexing import (
     index_prepared_rows,
     iter_file_rows,
 )
+from .global_metrics.process import process_global_metrics_upload_file
 from .global_metrics.opensearch import (
     build_global_metrics_update_by_query_body,
     iter_harvest_metric_groups,
     source_file_query,
     update_silver_group_by_query,
+    wait_for_update_task,
 )
 from .global_metrics.parsing import global_metric_row_from_hit
 from .harvesters.article import (
@@ -103,6 +105,26 @@ class GlobalMetricsUploadFileTests(TestCase):
                 with second.file.open("rb") as stored_file:
                     self.assertEqual(stored_file.read(), b"second-version")
                 self.assertEqual(mock_delay.call_count, 2)
+
+    @patch("harvest.global_metrics.process.index_file_obj")
+    @patch("harvest.tasks.process_global_metrics_upload_file.delay")
+    def test_process_skips_reindex_when_already_processed(self, mock_delay, mock_index):
+        with tempfile.TemporaryDirectory() as media_root:
+            with override_settings(MEDIA_ROOT=media_root):
+                upload_file = GlobalMetricsUploadFile(creator=self.user)
+                upload_file.file = SimpleUploadedFile(
+                    "metrics.xlsx",
+                    b"already-indexed",
+                    content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+                with self.captureOnCommitCallbacks(execute=True):
+                    upload_file.save()
+                upload_file.mark_processed()
+
+                result = process_global_metrics_upload_file(upload_file.pk)
+
+        self.assertTrue(result["skipped"])
+        mock_index.assert_not_called()
 
     def test_overwrite_storage_does_not_add_suffix(self):
         storage_path = "global_metrics_uploads/metrics.xlsx"
@@ -311,6 +333,69 @@ class GlobalMetricsUploadTaskTests(SimpleTestCase):
         kwargs = client.update_by_query.call_args.kwargs
         self.assertFalse(kwargs["wait_for_completion"])
         self.assertFalse(kwargs["refresh"])
+
+    @patch("harvest.global_metrics.opensearch.time.sleep")
+    def test_update_silver_group_by_query_retries_on_429(self, mock_sleep):
+        from opensearchpy.exceptions import TransportError
+
+        client = MagicMock()
+        client.update_by_query.side_effect = [
+            TransportError(429, "circuit_breaking_exception", "too large"),
+            {"task": "task-2"},
+        ]
+
+        response = update_silver_group_by_query(
+            client=client,
+            silver_index="silver_scientific_production",
+            group={
+                "year": 2024,
+                "issns": ["1234-5678"],
+                "indexed_in": {"Scopus"},
+                "country_codes": ["BR"],
+            },
+        )
+
+        self.assertEqual(response, {"task": "task-2"})
+        self.assertEqual(client.update_by_query.call_count, 2)
+        mock_sleep.assert_called()
+
+    @patch("harvest.global_metrics.opensearch.time.sleep")
+    def test_wait_for_update_task_returns_completed_response(self, mock_sleep):
+        client = MagicMock()
+        client.tasks.get.side_effect = [
+            {"completed": False},
+            {
+                "completed": True,
+                "response": {"total": 3, "updated": 2},
+            },
+        ]
+
+        response = wait_for_update_task(client, "t1", poll_interval=0.1)
+
+        self.assertEqual(response, {"total": 3, "updated": 2})
+        mock_sleep.assert_called_once_with(0.1)
+
+    def test_wait_for_update_task_raises_when_task_is_missing(self):
+        from opensearchpy.exceptions import NotFoundError
+
+        client = MagicMock()
+        client.tasks.get.side_effect = NotFoundError(404, "not found", {})
+
+        with self.assertRaisesMessage(RuntimeError, "gone"):
+            wait_for_update_task(client, "gone")
+
+    def test_wait_for_update_task_raises_on_task_error(self):
+        client = MagicMock()
+        client.tasks.get.return_value = {
+            "completed": True,
+            "error": {"type": "circuit_breaking_exception"},
+        }
+
+        with self.assertRaisesMessage(
+            RuntimeError,
+            "circuit_breaking_exception",
+        ):
+            wait_for_update_task(client, "failed-task")
 
     @override_settings(GLOBAL_METRICS_UPLOAD_ERROR_INDEX="global_metrics_upload_errors")
     @patch("harvest.global_metrics.indexing.OpenSearchIndexClient")
