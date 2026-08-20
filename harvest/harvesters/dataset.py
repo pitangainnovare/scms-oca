@@ -11,7 +11,6 @@ from harvest.exception_logs import ExceptionContext
 from harvest.harvesters.common import JSON_HEADERS, build_url
 from harvest.models import HarvestedSciELOData, HarvestErrorLogSciELOData
 
-DEFAULT_HEADERS = JSON_HEADERS
 
 API_SCIELO_DATA = settings.SITE_SCIELO_DATA + "/api/search"
 DATASET_URL = settings.SITE_SCIELO_DATA + "/api/datasets/:persistentId/"
@@ -108,7 +107,7 @@ def harvest_data(user, type, per_page=100, start=0):
                 type=type,
                 start=start,
                 per_page=per_page,
-                headers=DEFAULT_HEADERS,
+                headers=JSON_HEADERS,
             )
         except Exception as exc:
             logging.error(f"Erro ao buscar página (start={start}): {exc}", start, exc)
@@ -163,7 +162,7 @@ def _fetch_data_by_type(item):
         identifier = item.get("identifier")
         if not identifier:
             raise ValueError("Dataverse sem 'identifier'.")
-        data = fetch_dataverse_data(identifier=identifier, headers=DEFAULT_HEADERS)
+        data = fetch_dataverse_data(identifier=identifier, headers=JSON_HEADERS)
         source_url = f"{DATAVERSE_URL}{identifier}"
         return data, source_url, type_data, identifier
 
@@ -178,7 +177,7 @@ def _fetch_data_by_type(item):
         dataverse_obj = HarvestedSciELOData.objects.filter(identifier=dataverse_identifier).first()
         data = fetch_dataset_data(
             global_id=global_id,
-            headers=DEFAULT_HEADERS,
+            headers=JSON_HEADERS,
         )
         data["publisher"] = {
             "name": publisher,
